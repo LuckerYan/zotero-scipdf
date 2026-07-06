@@ -35,6 +35,12 @@ export class SciHubFetcher {
   private static readonly pdfNotAvailableRegexes = [
     /Please try to search again using DOI/im,
     /статья не найдена в базе/im,
+    /未找到与您的请求匹配的文章/im,
+    /未找到.*(?:文章|论文|文献|PDF)/im,
+    /(?:article|paper|document|PDF)\s+(?:not\s+found|not\s+available|unavailable)/im,
+    /(?:not\s+found|not\s+available|unavailable).*?(?:article|paper|document|PDF)/im,
+    /could\s+not\s+find/im,
+    /no\s+(?:article|paper|document|PDF)\s+(?:found|available)/im,
   ];
 
   private static readonly mobileUserAgent =
@@ -99,41 +105,53 @@ export class SciHubFetcher {
         item.getDisplayTitle(),
       );
 
-      let resultAction: (() => void) | undefined;
+      let success = false;
+      let notFoundError: PDFNotFoundError | undefined;
+      const errors: unknown[] = [];
       for (const scihubUrl of scihubUrls) {
         try {
           await this.fetchPDF(scihubUrl, item);
-          resultAction = () => {
-            Utils.showPopWin(
-              getString("popwin-fetchsuccess"),
-              item.getDisplayTitle(),
-              "success",
-            );
-          };
+          success = true;
           break;
         } catch (error) {
+          errors.push(error);
           if (error instanceof PDFNotFoundError) {
-            resultAction = () => {
-              Utils.showPopWin(
-                getString("popwin-pdfnotavaliable"),
-                item.getDisplayTitle(),
-                "fail",
-              );
-            };
-          } else {
-            resultAction = () => {
-              Utils.showPopWin(
-                getString("popwin-unknownerror"),
-                item.getDisplayTitle(),
-                "fail",
-                5000,
-              );
-            };
+            notFoundError ??= error;
           }
         }
       }
       win.close();
-      resultAction?.();
+
+      if (success) {
+        Utils.showPopWin(
+          getString("popwin-fetchsuccess"),
+          item.getDisplayTitle(),
+          "success",
+        );
+      } else if (notFoundError) {
+        ztoolkit.log(
+          `scihub: PDF not found for "${item.getDisplayTitle()}": ${notFoundError.message}`,
+        );
+        Utils.showPopWin(
+          getString("popwin-pdfnotavaliable"),
+          item.getDisplayTitle(),
+          "fail",
+          5000,
+        );
+      } else {
+        const message = errors.length
+          ? errors.map((error) => this.formatError(error)).join("\n\n")
+          : `No Sci-Hub resolver succeeded for "${item.getDisplayTitle()}"`;
+        ztoolkit.log(
+          `scihub: failed to fetch PDF for "${item.getDisplayTitle()}":\n${message}`,
+        );
+        Utils.showPopWin(
+          getString("popwin-unknownerror"),
+          message,
+          "fail",
+          15000,
+        );
+      }
     }
   }
 
@@ -195,19 +213,28 @@ export class SciHubFetcher {
 
     if (xhr.status === 200 && pdfUrl) {
       await Utils.attachRemotePDF(pdfUrl, item);
-    } else if (xhr.status === 200 && this.pdfNotAvailable(body)) {
-      ztoolkit.log(`scihub: PDF is not available at the moment "${scihubUrl}"`);
-      throw new PDFNotFoundError(`PDF is not available: ${scihubUrl}`);
-    } else {
-      ztoolkit.log(`scihub: failed to fetch PDF from "${scihubUrl}"`);
-      throw new Error(xhr.statusText);
+      return;
     }
+
+    if (
+      (xhr.status === 200 || xhr.status === 404) &&
+      this.pdfNotAvailable(body)
+    ) {
+      const message = `PDF not found at ${scihubUrl.href}: ${this.responseSummary(xhr)}`;
+      ztoolkit.log(`scihub: ${message}`);
+      throw new PDFNotFoundError(message);
+    }
+
+    const message = `Failed to fetch PDF from ${scihubUrl.href}: ${this.responseSummary(xhr)}`;
+    ztoolkit.log(`scihub: ${message}`);
+    throw new Error(message);
   }
 
   private static async fetchSciHubDocument(scihubUrl: URL) {
     return await Zotero.HTTP.request("GET", scihubUrl.href, {
       responseType: "document",
       headers: this.requestHeaders(),
+      successCodes: false,
     });
   }
 
@@ -520,11 +547,57 @@ export class SciHubFetcher {
     return undefined;
   }
 
-  private static pdfNotAvailable(body?: Element | null): boolean {
-    const innerHTML = (body as HTMLElement)?.innerHTML as string | undefined;
-    if (!innerHTML || innerHTML.trim() === "") {
-      return true;
+  private static responseSummary(xhr: XMLHttpRequest) {
+    const statusText = xhr.statusText ? ` ${xhr.statusText}` : "";
+    const title = this.responseTitle(xhr.responseXML);
+    const snippet = this.responseSnippet(xhr.responseXML);
+    return [
+      `HTTP ${xhr.status}${statusText}`,
+      title ? `title=${title}` : undefined,
+      snippet ? `body=${snippet}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("; ");
+  }
+
+  private static responseTitle(doc: Document | null | undefined) {
+    return this.compactText(doc?.querySelector("title")?.textContent).slice(
+      0,
+      200,
+    );
+  }
+
+  private static responseSnippet(doc: Document | null | undefined) {
+    const bodyText = this.compactText(doc?.querySelector("body")?.textContent);
+    return bodyText.slice(0, 500);
+  }
+
+  private static compactText(text: string | null | undefined) {
+    return (text ?? "").replace(/\s+/g, " ").trim();
+  }
+
+  private static formatError(error: unknown) {
+    if (error instanceof Error) {
+      return error.stack || error.message || error.name;
     }
-    return this.pdfNotAvailableRegexes.some((regex) => regex.test(innerHTML));
+    if (typeof error === "string") {
+      return error;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  private static pdfNotAvailable(body?: Element | null): boolean {
+    const text = [
+      this.compactText(body?.textContent),
+      (body as HTMLElement | null | undefined)?.innerHTML ?? "",
+    ].join("\n");
+    if (!text.trim()) {
+      return false;
+    }
+    return this.pdfNotAvailableRegexes.some((regex) => regex.test(text));
   }
 }
