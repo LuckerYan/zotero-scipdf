@@ -3,7 +3,7 @@ import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { getPref, setPref } from "./utils/prefs";
 import {
-  sciHubCustomResolver,
+  sciHubCustomResolvers,
   presetSciHubCustomResolvers,
 } from "./modules/CustomResolver";
 import { CustomResolverManager } from "./modules/CustomResolverManager";
@@ -19,21 +19,61 @@ async function onStartup() {
   initLocale();
 
   const resolverManager = CustomResolverManager.shared;
+  const presetVersion = 3;
+  const legacyPresetHosts = new Set([
+    "sci-hub.se",
+    "sci-hub.st",
+    "sci-hub.ru",
+    "sci-hub.box",
+    "sci-hub.red",
+    "sci-hub.ren",
+    "sci-hub.ee",
+    "sci-hub.su",
+    "sci-hub.world",
+    "sci-hub.kvnp.top",
+    "www.tesble.com",
+  ]);
+  const isLegacyPresetResolver = (resolverURL: string) => {
+    try {
+      return legacyPresetHosts.has(
+        new URL(resolverURL.replace(/\{doi\}.*$/, "")).hostname,
+      );
+    } catch {
+      return false;
+    }
+  };
+  const migratePresetResolvers = (automatic = true) => {
+    const oldPresetResolvers = resolverManager.customResolvers.filter(
+      (resolver) => isLegacyPresetResolver(resolver.url),
+    );
+    resolverManager.removeCustomResolversInZotero(oldPresetResolvers);
+    resolverManager.appendCustomResolversInZotero(
+      presetSciHubCustomResolvers(automatic),
+    );
+    setPref("presetVersion", presetVersion);
+  };
+
   if (!getPref("firstInstall")) {
     setPref("firstInstall", true);
     const url = Zotero.Prefs.get("zoteroscihub.scihub_url");
     const autoDownload = Boolean(
       Zotero.Prefs.get("zoteroscihub.automatic_pdf_download"),
     );
-    if (url && typeof url === "string") {
-      resolverManager.appendCustomResolversInZotero([
-        sciHubCustomResolver(url, autoDownload),
-      ]);
-    } else {
+    if (url && typeof url === "string" && !isLegacyPresetResolver(url)) {
       resolverManager.appendCustomResolversInZotero(
-        presetSciHubCustomResolvers(true),
+        sciHubCustomResolvers(url, autoDownload),
+      );
+      setPref("presetVersion", presetVersion);
+    } else {
+      migratePresetResolvers(
+        url && typeof url === "string" ? autoDownload : true,
       );
     }
+  } else if (getPref("presetVersion") !== presetVersion) {
+    const oldPresetResolver = resolverManager.customResolvers.find((resolver) =>
+      isLegacyPresetResolver(resolver.url),
+    );
+    migratePresetResolvers(oldPresetResolver?.automatic !== false);
   } else {
     resolverManager.restoreCustomResolversInZotero();
   }

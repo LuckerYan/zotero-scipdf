@@ -40,42 +40,73 @@ export function sciHubCustomResolver(
   url: string,
   automatic = true,
 ): CustomResolver {
-  return {
+  return sciHubCustomResolvers(url, automatic)[0];
+}
+
+export function sciHubCustomResolvers(
+  url: string,
+  automatic = true,
+): CustomResolver[] {
+  const resolverURL = url.includes("{doi}")
+    ? url
+    : url.endsWith("/")
+      ? `${url}{doi}`
+      : `${url}/{doi}`;
+  const common = {
     name: "Sci-Hub",
-    method: "GET",
-    url: url.includes("{doi}")
-      ? url
-      : url.endsWith("/")
-        ? `${url}{doi}`
-        : `${url}/{doi}`,
-    mode: "html",
-    selector: "#pdf",
-    attribute: "src",
+    method: "GET" as const,
+    url: resolverURL,
+    mode: "html" as const,
     automatic: automatic,
   };
+  return [
+    {
+      ...common,
+      selector: "object[type='application/pdf']",
+      attribute: "data",
+    },
+    {
+      ...common,
+      selector: 'meta[name="citation_pdf_url"]',
+      attribute: "content",
+    },
+    {
+      ...common,
+      selector: "#pdf",
+      attribute: "src",
+    },
+    {
+      ...common,
+      selector: "iframe[src*='.pdf']",
+      attribute: "src",
+    },
+    {
+      ...common,
+      selector: "embed[src*='.pdf']",
+      attribute: "src",
+    },
+    {
+      ...common,
+      selector: "a[href*='.pdf']",
+      attribute: "href",
+    },
+  ];
 }
 
 export function presetSciHubCustomResolvers(
   automatic = true,
 ): Readonly<Readonly<CustomResolver>[]> {
   const scihubURLs = [
-    "https://sci-hub.se/",
-    "https://sci-hub.st/",
+    "https://sci-hub.kvnp.top/",
+    "https://www.tesble.com/",
     "https://sci-hub.ru/",
-    "https://sci-hub.box/",
+    "https://sci-hub.su/",
     "https://sci-hub.red/",
+    "https://sci-hub.box/",
+    "https://sci-hub.st/",
     "https://sci-hub.ren/",
     "https://sci-hub.ee/",
+    "https://sci-hub.world/",
   ];
-  return scihubURLs.map((url) => {
-    return {
-      name: "Sci-Hub",
-      method: "GET",
-      url: `${url}{doi}`,
-      mode: "html",
-      selector: "#pdf",
-      attribute: "src",
-      automatic: automatic,
-    };
-  });
+  return scihubURLs.flatMap((url) => sciHubCustomResolvers(url, automatic));
 }

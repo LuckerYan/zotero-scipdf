@@ -1,5 +1,5 @@
 import { config } from "../../package.json";
-import { sciHubCustomResolver } from "./CustomResolver";
+import { sciHubCustomResolvers } from "./CustomResolver";
 import { CustomResolverManager } from "./CustomResolverManager";
 
 export async function registerPrefsScripts(_window: Window) {
@@ -23,23 +23,23 @@ export async function registerPrefsScripts(_window: Window) {
     return;
   }
 
-  const resolver = CustomResolverManager.shared.customResolvers;
+  const resolvers = CustomResolverManager.shared.customResolvers;
   autoDownloadCheckbox.checked =
-    resolver.length > 0 && resolver[0].automatic !== false;
-  urlInput.value = resolver.map((e) => e.url).join(";");
+    resolvers.length > 0 && resolvers[0].automatic !== false;
+  urlInput.value = Array.from(new Set(resolvers.map((e) => e.url))).join(";");
 
-  const parseResolver = (url: string) => {
+  const parseResolvers = (url: string) => {
     const trimmedURL = url.trim();
     if (trimmedURL.length <= 0) {
       return undefined;
     }
-    const resolver = sciHubCustomResolver(
+    const resolvers = sciHubCustomResolvers(
       trimmedURL,
       autoDownloadCheckbox.checked,
     );
     try {
-      new URL(resolver.url.replace("{doi}", "10.0000/test"));
-      return resolver;
+      new URL(resolvers[0].url.replace("{doi}", "10.0000/test"));
+      return resolvers;
     } catch {
       return undefined;
     }
@@ -71,10 +71,10 @@ export async function registerPrefsScripts(_window: Window) {
       if (url.length <= 0) {
         continue;
       }
-      const resolver = parseResolver(url);
-      if (resolver) {
-        CustomResolverManager.shared.appendCustomResolversInZotero([resolver]);
-        setedURLs.push(resolver.url);
+      const resolvers = parseResolvers(url);
+      if (resolvers) {
+        CustomResolverManager.shared.appendCustomResolversInZotero(resolvers);
+        setedURLs.push(resolvers[0].url);
       } else {
         hasInvalidURL = true;
       }
