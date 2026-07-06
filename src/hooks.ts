@@ -2,7 +2,10 @@ import { getString, initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { getPref, setPref } from "./utils/prefs";
-import { sciHubCustomResolver, presetSciHubCustomResolvers } from "./modules/CustomResolver";
+import {
+  sciHubCustomResolver,
+  presetSciHubCustomResolvers,
+} from "./modules/CustomResolver";
 import { CustomResolverManager } from "./modules/CustomResolverManager";
 import { Common } from "./modules/Common";
 
@@ -15,25 +18,27 @@ async function onStartup() {
 
   initLocale();
 
-
+  const resolverManager = CustomResolverManager.shared;
   if (!getPref("firstInstall")) {
     setPref("firstInstall", true);
     const url = Zotero.Prefs.get("zoteroscihub.scihub_url");
-    let autoDownload = false;
-    if (Zotero.Prefs.get("zoteroscihub.automatic_pdf_download")) {
-      autoDownload = true;
-    }
-    if (url && typeof url === 'string') {
-      const resolver = sciHubCustomResolver(url, autoDownload);
-      CustomResolverManager.shared.appendCustomResolversInZotero([resolver]);
+    const autoDownload = Boolean(
+      Zotero.Prefs.get("zoteroscihub.automatic_pdf_download"),
+    );
+    if (url && typeof url === "string") {
+      resolverManager.appendCustomResolversInZotero([
+        sciHubCustomResolver(url, autoDownload),
+      ]);
     } else {
-      CustomResolverManager.shared.appendCustomResolversInZotero(presetSciHubCustomResolvers(true));
+      resolverManager.appendCustomResolversInZotero(
+        presetSciHubCustomResolvers(true),
+      );
     }
   } else {
-    CustomResolverManager.shared.appendCustomResolversInZotero(presetSciHubCustomResolvers(true));
+    resolverManager.restoreCustomResolversInZotero();
   }
 
-  Common.registerPrefs();
+  await Common.registerPrefs();
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -65,7 +70,6 @@ function onShutdown(): void {
   delete Zotero[addon.data.config.addonInstance];
 }
 
-
 /**
  * This function is just an example of dispatcher for Preference UI events.
  * Any operations should be placed in a function to keep this funcion clear.
@@ -75,7 +79,7 @@ function onShutdown(): void {
 async function onPrefsEvent(type: string, data: { [key: string]: any }) {
   switch (type) {
     case "load":
-      registerPrefsScripts(data.window);
+      await registerPrefsScripts(data.window);
       break;
     default:
       return;

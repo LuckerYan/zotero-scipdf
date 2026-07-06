@@ -3,15 +3,24 @@ import { getString } from "../utils/locale";
 import { SciHubFetcher } from "./SciHubFetcher";
 
 export class Common {
-  static registerPrefs() {
+  static async registerPrefs() {
     const prefOptions = {
       pluginID: config.addonID,
-      src: rootURI + "content/preferences.xhtml",
+      id: `zotero-prefpane-${config.addonRef}`,
+      src: "content/preferences.xhtml",
       label: getString("prefs-title"),
-      image: `chrome://${config.addonRef}/content/icons/sci-hub-logo.svg`,
-      defaultXUL: true,
+      image: "content/icons/sci-hub-logo.svg",
     };
-    ztoolkit.getGlobal("Zotero").PreferencePanes.register(prefOptions);
+    const preferencePanes = ztoolkit.getGlobal("Zotero").PreferencePanes;
+    try {
+      await preferencePanes.register(prefOptions);
+    } catch (error) {
+      if (String(error).includes("already registered")) {
+        ztoolkit.log(`Preference pane ${prefOptions.id} already registered`);
+        return;
+      }
+      throw error;
+    }
   }
 
   static registerRightClickMenuItem() {

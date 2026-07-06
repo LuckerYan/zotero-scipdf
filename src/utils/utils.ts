@@ -40,7 +40,9 @@ export class Utils {
       referrer: "",
       cookieSandbox: null,
     };
-    ztoolkit.log(`Import Options: ${JSON.stringify(importOptions, null, "\t")}`);
+    ztoolkit.log(
+      `Import Options: ${JSON.stringify(importOptions, null, "\t")}`,
+    );
     await Zotero.Attachments.importFromURL(importOptions);
   }
 

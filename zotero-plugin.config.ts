@@ -42,7 +42,7 @@ export default defineConfig({
     bumpp: {
       commit: "chore(publish): release V%s",
       tag: "V%s",
-    }
+    },
   },
 
   test: {
