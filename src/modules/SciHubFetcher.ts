@@ -275,17 +275,60 @@ export class SciHubFetcher {
         continue;
       }
 
-      const win = Utils.showPopWin(
-        getString("popwin-fetching"),
-        item.getDisplayTitle(),
-      );
-
       let success = false;
       const notFoundErrors: PDFNotFoundError[] = [];
       const errors: unknown[] = [];
       const platforms = PlatformWeightManager.sort(
         this.buildFetchPlatforms(dois, title),
       );
+      const attemptsForPlatform = (platform: FetchPlatform) =>
+        platform.type === "semantic-scholar" ? 1 : Math.max(dois.length, 1);
+      const totalAttempts = Math.max(
+        platforms.reduce(
+          (count, candidate) => count + attemptsForPlatform(candidate.value),
+          0,
+        ),
+        1,
+      );
+      let completedAttempts = 0;
+      const progressPercent = (completed = completedAttempts) =>
+        Math.min(
+          96,
+          Math.max(6, Math.round(6 + (completed / totalAttempts) * 88)),
+        );
+      const platformLabel = (platform: FetchPlatform) =>
+        platform.label || platform.id;
+      const progressWin = Utils.showProgressPopWin(
+        getString("popwin-fetching"),
+        "准备检索文献 PDF 来源",
+        {
+          progress: progressPercent(0),
+        },
+      );
+      const markAttemptStart = (platform: FetchPlatform, doi?: string) => {
+        const label = platformLabel(platform);
+        const doiHint = doi ? ` · DOI ${this.shortDOI(doi)}` : "";
+        progressWin.update(
+          `正在检索 ${label}${doiHint}`,
+          progressPercent(completedAttempts),
+        );
+      };
+      const markAttemptDone = (
+        platform: FetchPlatform,
+        result: "miss" | "success",
+      ) => {
+        completedAttempts = Math.min(completedAttempts + 1, totalAttempts);
+        const label = platformLabel(platform);
+        progressWin.update(
+          result === "success"
+            ? `${label} 已找到并保存 PDF`
+            : `${label} 未命中，继续尝试下一个来源`,
+          result === "success" ? 100 : progressPercent(completedAttempts),
+          {
+            type: result === "success" ? "success" : "default",
+          },
+        );
+      };
 
       ztoolkit.log(
         `sci-pdf platform order: ${platforms
@@ -303,44 +346,57 @@ export class SciHubFetcher {
         const platformErrors: unknown[] = [];
 
         if (platform.type === "semantic-scholar") {
+          markAttemptStart(platform);
           try {
             await this.fetchSemanticScholarPDF(undefined, item);
+            markAttemptDone(platform, "success");
             success = true;
           } catch (error) {
             platformErrors.push(error);
+            markAttemptDone(platform, "miss");
           }
         } else if (platform.type === "google-scholar") {
           for (const doi of dois) {
+            markAttemptStart(platform, doi);
             try {
               await this.fetchGoogleScholarPDF(doi, item);
+              markAttemptDone(platform, "success");
               success = true;
               break;
             } catch (error) {
               platformErrors.push(error);
+              markAttemptDone(platform, "miss");
             }
           }
         } else if (platform.type === "unpaywall") {
           for (const doi of dois) {
+            markAttemptStart(platform, doi);
             try {
               await this.fetchUnpaywallPDF(doi, item);
+              markAttemptDone(platform, "success");
               success = true;
               break;
             } catch (error) {
               platformErrors.push(error);
+              markAttemptDone(platform, "miss");
             }
           }
         } else if (platform.type === "openalex") {
           for (const doi of dois) {
+            markAttemptStart(platform, doi);
             try {
               await this.fetchOpenAlexPDF(doi, item);
+              markAttemptDone(platform, "success");
               success = true;
               break;
             } catch (error) {
               platformErrors.push(error);
+              markAttemptDone(platform, "miss");
             }
           }
         } else {
           for (const doi of dois) {
+            markAttemptStart(platform, doi);
             let scihubUrl: URL;
             try {
               scihubUrl = new URL(doi, platform.baseURL);
@@ -352,15 +408,18 @@ export class SciHubFetcher {
                   )}`,
                 ),
               );
+              markAttemptDone(platform, "miss");
               continue;
             }
 
             try {
               await this.fetchPDF(scihubUrl, item);
+              markAttemptDone(platform, "success");
               success = true;
               break;
             } catch (error) {
               platformErrors.push(error);
+              markAttemptDone(platform, "miss");
             }
           }
         }
@@ -389,7 +448,7 @@ export class SciHubFetcher {
         }
       }
 
-      win.close();
+      progressWin.close();
 
       const onlyNonDecisiveErrors =
         errors.length > 0 &&
@@ -400,6 +459,7 @@ export class SciHubFetcher {
           getString("popwin-fetchsuccess"),
           item.getDisplayTitle(),
           "success",
+          1500,
         );
       } else if (
         notFoundErrors.length > 0 &&
@@ -421,7 +481,7 @@ export class SciHubFetcher {
           getString("popwin-pdfnotavaliable"),
           item.getDisplayTitle(),
           "warning",
-          5000,
+          1500,
         );
       } else {
         const failures = [...errors, ...notFoundErrors];
@@ -435,7 +495,7 @@ export class SciHubFetcher {
           getString("popwin-unknownerror"),
           message,
           "fail",
-          15000,
+          1500,
           message,
         );
       }
@@ -1797,6 +1857,13 @@ export class SciHubFetcher {
       .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
       .trim()
       .toLowerCase();
+  }
+
+  private static shortDOI(doi: string) {
+    const normalized = this.normalizeDOI(doi);
+    return normalized.length > 34
+      ? `${normalized.slice(0, 31)}...`
+      : normalized;
   }
 
   private static normalizeTitle(title: string | null | undefined) {

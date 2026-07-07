@@ -3,6 +3,8 @@ import { getString } from "../utils/locale";
 import { SciHubFetcher } from "./SciHubFetcher";
 
 export class Common {
+  private static readonly fetchMenuItemID = "zotero-itemmenu-scihub-fetch";
+
   static async registerPrefs() {
     const prefOptions = {
       pluginID: config.addonID,
@@ -24,10 +26,12 @@ export class Common {
   }
 
   static registerRightClickMenuItem() {
+    this.removeExistingRightClickMenuItems();
+
     const menuIcon = `chrome://${config.addonRef}/content/icons/sci-hub-logo.svg`;
     ztoolkit.Menu.register("item", {
       tag: "menuitem",
-      id: "zotero-itemmenu-scihub-fetch",
+      id: this.fetchMenuItemID,
       label: getString("menuitem-fetch"),
       isHidden: () => {
         const items = Zotero.getActiveZoteroPane().getSelectedItems();
@@ -39,5 +43,33 @@ export class Common {
       },
       icon: menuIcon,
     });
+  }
+
+  private static removeExistingRightClickMenuItems() {
+    const windows = Zotero.getMainWindows?.() ?? [];
+    const currentWindow = Zotero.getMainWindow?.();
+    if (currentWindow && !windows.includes(currentWindow)) {
+      windows.push(currentWindow);
+    }
+
+    for (const win of windows) {
+      try {
+        const staleItems = win.document.querySelectorAll(
+          `[id="${this.fetchMenuItemID}"]`,
+        );
+        staleItems.forEach((item: Element) => item.remove());
+        if (staleItems.length > 0) {
+          ztoolkit.log(
+            `Removed ${staleItems.length} stale Sci-PDF context menu item(s)`,
+          );
+        }
+      } catch (error) {
+        ztoolkit.log(
+          `Failed to remove stale Sci-PDF context menu item(s): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 }
