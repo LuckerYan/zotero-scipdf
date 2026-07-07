@@ -32,11 +32,38 @@ interface SciHubPlatform {
   baseURL: string;
 }
 
+interface OpenAlexLocation {
+  is_oa?: boolean;
+  pdf_url?: string | null;
+  landing_page_url?: string | null;
+}
+
+interface OpenAlexWorkResponse {
+  id?: string;
+  doi?: string | null;
+  title?: string;
+  display_name?: string;
+  open_access?: {
+    is_oa?: boolean;
+    oa_status?: string;
+    oa_url?: string | null;
+    any_repository_has_fulltext?: boolean;
+  };
+  primary_location?: OpenAlexLocation | null;
+  best_oa_location?: OpenAlexLocation | null;
+  locations?: OpenAlexLocation[];
+}
+
 type FetchPlatform =
   | {
       id: string;
       label: string;
       type: "semantic-scholar";
+    }
+  | {
+      id: string;
+      label: string;
+      type: "openalex";
     }
   | {
       baseURL: string;
@@ -252,6 +279,16 @@ export class SciHubFetcher {
           } catch (error) {
             platformErrors.push(error);
           }
+        } else if (platform.type === "openalex") {
+          for (const doi of dois) {
+            try {
+              await this.fetchOpenAlexPDF(doi, item);
+              success = true;
+              break;
+            } catch (error) {
+              platformErrors.push(error);
+            }
+          }
         } else {
           for (const doi of dois) {
             let scihubUrl: URL;
@@ -435,6 +472,16 @@ export class SciHubFetcher {
     }
 
     if (dois.length > 0) {
+      platforms.push({
+        id: "openalex.org",
+        label: "OpenAlex",
+        value: {
+          id: "openalex.org",
+          label: "OpenAlex",
+          type: "openalex",
+        },
+      });
+
       for (const platform of this.sciHubPlatforms) {
         platforms.push({
           id: platform.id,
@@ -631,6 +678,144 @@ export class SciHubFetcher {
     const pdfURL = new URL(data.url, "https://fast.wbleb.com");
     pdfURL.protocol = "https:";
     await Utils.attachRemotePDF(pdfURL, item);
+  }
+
+  private static async fetchOpenAlexPDF(doi: string, item: Zotero.Item) {
+    const normalizedDOI = this.normalizeDOI(doi);
+    const work = await this.fetchOpenAlexWorkByDOI(normalizedDOI);
+    const candidates = this.openAlexPDFCandidates(work);
+
+    if (candidates.length <= 0) {
+      const details = [
+        `OpenAlex PDF not found for DOI ${normalizedDOI}`,
+        work.id ? `work=${work.id}` : undefined,
+        work.open_access?.oa_status
+          ? `oa_status=${work.open_access.oa_status}`
+          : undefined,
+        work.open_access?.oa_url
+          ? `oa_url_without_pdf=${work.open_access.oa_url}`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join("; ");
+      throw new PDFNotFoundError(details);
+    }
+
+    const attachErrors: unknown[] = [];
+    for (const candidate of candidates) {
+      try {
+        ztoolkit.log(
+          `openalex: importing ${candidate.source} PDF ${candidate.url.href}`,
+        );
+        await Utils.attachRemotePDF(candidate.url, item);
+        return;
+      } catch (error) {
+        attachErrors.push(
+          new Error(
+            `OpenAlex candidate failed (${candidate.source}, ${candidate.url.href}): ${this.formatError(
+              error,
+            )}`,
+          ),
+        );
+      }
+    }
+
+    throw new Error(
+      `OpenAlex PDF candidates failed for DOI ${normalizedDOI}:\n${attachErrors
+        .map((error) => this.formatError(error))
+        .join("\n\n")}`,
+    );
+  }
+
+  private static async fetchOpenAlexWorkByDOI(
+    doi: string,
+  ): Promise<OpenAlexWorkResponse> {
+    const workURL = new URL(
+      `/works/doi:${encodeURIComponent(doi)}`,
+      "https://api.openalex.org",
+    );
+    workURL.searchParams.set("mailto", "ui@openalex.org");
+
+    const xhr = await Zotero.HTTP.request("GET", workURL.href, {
+      responseType: "json",
+      headers: this.semanticScholarHeaders({
+        Accept: "application/json",
+        Origin: "https://openalex.org",
+        Referer: "https://openalex.org/",
+      }),
+      successCodes: false,
+    });
+
+    if (xhr.status === 404) {
+      throw new PDFNotFoundError(
+        `OpenAlex work not found for DOI ${doi}: ${this.responseSummary(xhr)}`,
+      );
+    }
+    if (xhr.status !== 200) {
+      throw new Error(
+        `OpenAlex DOI lookup failed for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    const work = this.parseJSONResponse<OpenAlexWorkResponse>(xhr);
+    const returnedDOI = this.normalizeDOI(work.doi);
+    if (returnedDOI && returnedDOI !== doi) {
+      throw new PDFNotFoundError(
+        `OpenAlex DOI mismatch for DOI ${doi}: work ${work.id ?? "unknown"} returned ${returnedDOI}`,
+      );
+    }
+    return work;
+  }
+
+  private static openAlexPDFCandidates(
+    work: OpenAlexWorkResponse,
+  ): SemanticScholarPDFCandidate[] {
+    const candidates: SemanticScholarPDFCandidate[] = [];
+    this.addOpenAlexPDFCandidate(
+      candidates,
+      work.primary_location?.pdf_url,
+      "OpenAlex primary_location.pdf_url",
+    );
+    this.addOpenAlexPDFCandidate(
+      candidates,
+      work.best_oa_location?.pdf_url,
+      "OpenAlex best_oa_location.pdf_url",
+    );
+    for (const location of work.locations ?? []) {
+      this.addOpenAlexPDFCandidate(
+        candidates,
+        location.pdf_url,
+        "OpenAlex locations[].pdf_url",
+      );
+    }
+    return candidates;
+  }
+
+  private static addOpenAlexPDFCandidate(
+    candidates: SemanticScholarPDFCandidate[],
+    rawURL: string | null | undefined,
+    source: string,
+  ) {
+    if (!rawURL) {
+      return;
+    }
+    try {
+      const pdfURL = new URL(rawURL);
+      if (!["http:", "https:"].includes(pdfURL.protocol)) {
+        return;
+      }
+      if (!candidates.some((candidate) => candidate.url.href === pdfURL.href)) {
+        candidates.push({ url: pdfURL, source });
+      }
+    } catch (error) {
+      ztoolkit.log(
+        `openalex: skipped invalid PDF candidate ${rawURL}: ${this.formatError(
+          error,
+        )}`,
+      );
+    }
   }
 
   private static async fetchSemanticScholarPDF(
