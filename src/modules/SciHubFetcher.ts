@@ -31,6 +31,68 @@ interface AltchaSolutionResponse {
   success?: boolean;
 }
 
+interface SemanticScholarGraphPaper {
+  paperId?: string;
+  externalIds?: Record<string, string | number | undefined>;
+  title?: string;
+  url?: string;
+  isOpenAccess?: boolean;
+  openAccessPdf?: {
+    url?: string;
+    status?: string | null;
+    license?: string | null;
+  };
+}
+
+interface SemanticScholarPaperLink {
+  url?: string;
+  linkType?: string;
+}
+
+interface SemanticScholarSearchPaper {
+  id?: string;
+  doiInfo?: {
+    doi?: string;
+  };
+  title?: {
+    text?: string;
+  };
+  isPdfVisible?: boolean;
+  primaryPaperLink?: SemanticScholarPaperLink;
+  alternatePaperLinks?: SemanticScholarPaperLink[];
+  openAccessInfo?: {
+    status?: string | null;
+    license?: string | null;
+    location?: {
+      url?: string;
+      isPdf?: boolean;
+    };
+  };
+}
+
+interface SemanticScholarSearchResponse {
+  results?: SemanticScholarSearchPaper[];
+}
+
+interface SemanticScholarPDFData {
+  pdfUrl?: string;
+  pdfUrlSelfHosted?: string;
+}
+
+interface SemanticScholarPDFVisible {
+  pdfUrl?: {
+    url?: string;
+  };
+  pdfUrlSelfHosted?: {
+    url?: string;
+  };
+}
+
+interface SemanticScholarPDFCandidate {
+  url: URL;
+  source: string;
+}
+
 export class SciHubFetcher {
   private static readonly pdfNotAvailableRegexes = [
     /Please try to search again using DOI/im,
@@ -45,6 +107,11 @@ export class SciHubFetcher {
 
   private static readonly mobileUserAgent =
     "Mozilla/5.0 (iPhone; CPU iPhone OS 11_3_1 like Mac OS X) AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1";
+
+  private static readonly semanticScholarUserAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
+
+  private static semanticScholarUIVersionCache: string | undefined;
 
   private static readonly sha256InitialHash = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
@@ -89,14 +156,15 @@ export class SciHubFetcher {
     }
 
     for (const item of filtered) {
-      const scihubUrls = await this.buildSciHubURLs(item);
-      if (scihubUrls.length <= 0) {
+      const dois = await Utils.extractDOIs(item);
+      const title = this.itemTitle(item);
+      if (dois.length <= 0 && !title) {
         Utils.showPopWin(
           getString("popwin-doimissing"),
           item.getDisplayTitle(),
           "fail",
         );
-        ztoolkit.log(`DOI Not Found for "${item.getField("title")}"`);
+        ztoolkit.log(`DOI/Title Not Found for "${item.getField("title")}"`);
         continue;
       }
 
@@ -106,17 +174,49 @@ export class SciHubFetcher {
       );
 
       let success = false;
-      let notFoundError: PDFNotFoundError | undefined;
+      const notFoundErrors: PDFNotFoundError[] = [];
       const errors: unknown[] = [];
-      for (const scihubUrl of scihubUrls) {
+
+      if (dois.length > 0) {
+        for (const doi of dois) {
+          try {
+            await this.fetchSemanticScholarPDF(doi, item);
+            success = true;
+            break;
+          } catch (error) {
+            if (error instanceof PDFNotFoundError) {
+              notFoundErrors.push(error);
+            } else {
+              errors.push(error);
+            }
+          }
+        }
+      } else {
         try {
-          await this.fetchPDF(scihubUrl, item);
+          await this.fetchSemanticScholarPDF(undefined, item);
           success = true;
-          break;
         } catch (error) {
-          errors.push(error);
           if (error instanceof PDFNotFoundError) {
-            notFoundError ??= error;
+            notFoundErrors.push(error);
+          } else {
+            errors.push(error);
+          }
+        }
+      }
+
+      if (!success && dois.length > 0) {
+        const scihubUrls = this.buildSciHubURLsForDOIs(dois);
+        for (const scihubUrl of scihubUrls) {
+          try {
+            await this.fetchPDF(scihubUrl, item);
+            success = true;
+            break;
+          } catch (error) {
+            if (error instanceof PDFNotFoundError) {
+              notFoundErrors.push(error);
+            } else {
+              errors.push(error);
+            }
           }
         }
       }
@@ -128,9 +228,11 @@ export class SciHubFetcher {
           item.getDisplayTitle(),
           "success",
         );
-      } else if (notFoundError) {
+      } else if (errors.length <= 0 && notFoundErrors.length > 0) {
         ztoolkit.log(
-          `scihub: PDF not found for "${item.getDisplayTitle()}": ${notFoundError.message}`,
+          `sci-pdf: PDF not found for "${item.getDisplayTitle()}": ${notFoundErrors
+            .map((error) => error.message)
+            .join("\n")}`,
         );
         Utils.showPopWin(
           getString("popwin-pdfnotavaliable"),
@@ -139,11 +241,12 @@ export class SciHubFetcher {
           5000,
         );
       } else {
-        const message = errors.length
-          ? errors.map((error) => this.formatError(error)).join("\n\n")
-          : `No Sci-Hub resolver succeeded for "${item.getDisplayTitle()}"`;
+        const failures = [...errors, ...notFoundErrors];
+        const message = failures.length
+          ? failures.map((error) => this.formatFetchFailure(error)).join("\n\n")
+          : `No PDF resolver succeeded for "${item.getDisplayTitle()}"`;
         ztoolkit.log(
-          `scihub: failed to fetch PDF for "${item.getDisplayTitle()}":\n${message}`,
+          `sci-pdf: failed to fetch PDF for "${item.getDisplayTitle()}":\n${message}`,
         );
         Utils.showPopWin(
           getString("popwin-unknownerror"),
@@ -156,7 +259,10 @@ export class SciHubFetcher {
   }
 
   private static async buildSciHubURLs(item: Zotero.Item): Promise<URL[]> {
-    const dois = await Utils.extractDOIs(item);
+    return this.buildSciHubURLsForDOIs(await Utils.extractDOIs(item));
+  }
+
+  private static buildSciHubURLsForDOIs(dois: string[]): URL[] {
     const baseURLs = this.baseSciHubURLs;
     const urls: URL[] = [];
     for (const doi of dois) {
@@ -228,6 +334,549 @@ export class SciHubFetcher {
     const message = `Failed to fetch PDF from ${scihubUrl.href}: ${this.responseSummary(xhr)}`;
     ztoolkit.log(`scihub: ${message}`);
     throw new Error(message);
+  }
+
+  private static async fetchSemanticScholarPDF(
+    doi: string | undefined,
+    item: Zotero.Item,
+  ) {
+    const candidates: SemanticScholarPDFCandidate[] = [];
+    const notFoundErrors: PDFNotFoundError[] = [];
+    const softErrors: unknown[] = [];
+    const fatalErrors: unknown[] = [];
+    let graphPaper: SemanticScholarGraphPaper | undefined;
+    let searchPaper: SemanticScholarSearchPaper | undefined;
+
+    if (doi) {
+      try {
+        graphPaper = await this.fetchSemanticScholarGraphPaper(doi);
+        this.addSemanticScholarPDFCandidate(
+          candidates,
+          graphPaper.openAccessPdf?.url,
+          "Semantic Scholar Graph openAccessPdf",
+        );
+      } catch (error) {
+        if (error instanceof PDFNotFoundError) {
+          notFoundErrors.push(error);
+        } else {
+          // Graph API is useful when available, but the no-key endpoint is easy to rate-limit.
+          // Keep these as soft evidence until the website API also fails.
+          softErrors.push(error);
+        }
+      }
+    }
+
+    if (graphPaper?.paperId) {
+      try {
+        this.addSemanticScholarPDFCandidates(
+          candidates,
+          await this.fetchSemanticScholarWebsitePDFCandidates(
+            graphPaper.paperId,
+          ),
+        );
+      } catch (error) {
+        if (error instanceof PDFNotFoundError) {
+          notFoundErrors.push(error);
+        } else {
+          softErrors.push(error);
+        }
+      }
+    }
+
+    this.addSemanticScholarArxivCandidate(
+      candidates,
+      graphPaper?.externalIds?.ArXiv,
+      "Semantic Scholar Graph ArXiv",
+    );
+
+    if (candidates.length <= 0 || !doi) {
+      try {
+        searchPaper = await this.searchSemanticScholarPaper(doi, item);
+        this.addSemanticScholarSearchCandidates(candidates, searchPaper);
+        if (searchPaper.id) {
+          this.addSemanticScholarPDFCandidates(
+            candidates,
+            await this.fetchSemanticScholarWebsitePDFCandidates(searchPaper.id),
+          );
+        }
+      } catch (error) {
+        if (error instanceof PDFNotFoundError) {
+          notFoundErrors.push(error);
+        } else {
+          fatalErrors.push(error);
+        }
+      }
+    }
+
+    if (candidates.length <= 0) {
+      const target = doi ? `DOI ${doi}` : `title "${this.itemTitle(item)}"`;
+      if (searchPaper || fatalErrors.length <= 0) {
+        const details = [
+          `Semantic Scholar PDF not found for ${target}`,
+          searchPaper
+            ? "Semantic Scholar has a matching paper record, but no visible PDF candidate was returned."
+            : undefined,
+          ...notFoundErrors.map((error) => error.message),
+        ]
+          .filter(Boolean)
+          .join("\n");
+        if (softErrors.length > 0) {
+          ztoolkit.log(
+            `semantic-scholar: ignored soft failure(s) after PDF-not-found decision for ${target}:\n${softErrors
+              .map((error) => this.formatError(error))
+              .join("\n\n")}`,
+          );
+        }
+        throw new PDFNotFoundError(details);
+      }
+
+      const message = [
+        `Semantic Scholar failed before it could decide PDF availability for ${target}`,
+        ...fatalErrors.map((error) => this.formatError(error)),
+        ...softErrors.map((error) => this.formatError(error)),
+        ...notFoundErrors.map((error) => error.message),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      throw new Error(message);
+    }
+
+    const attachErrors: unknown[] = [];
+    for (const candidate of candidates) {
+      try {
+        ztoolkit.log(
+          `semantic-scholar: importing ${candidate.source} PDF ${candidate.url.href}`,
+        );
+        await Utils.attachRemotePDF(candidate.url, item);
+        return;
+      } catch (error) {
+        attachErrors.push(
+          new Error(
+            `Semantic Scholar candidate failed (${candidate.source}, ${candidate.url.href}): ${this.formatError(
+              error,
+            )}`,
+          ),
+        );
+      }
+    }
+
+    throw new Error(
+      `Semantic Scholar PDF candidates failed for ${
+        doi ? `DOI ${doi}` : `title "${this.itemTitle(item)}"`
+      }:\n${attachErrors.map((error) => this.formatError(error)).join("\n\n")}`,
+    );
+  }
+
+  private static async fetchSemanticScholarGraphPaper(
+    doi: string,
+  ): Promise<SemanticScholarGraphPaper> {
+    const url = new URL(
+      `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(
+        doi,
+      )}`,
+    );
+    url.searchParams.set(
+      "fields",
+      "paperId,externalIds,title,openAccessPdf,url,isOpenAccess",
+    );
+
+    const xhr = await Zotero.HTTP.request("GET", url.href, {
+      responseType: "json",
+      headers: this.semanticScholarHeaders({
+        Accept: "application/json",
+      }),
+      successCodes: false,
+    });
+    if (xhr.status === 404) {
+      throw new PDFNotFoundError(
+        `Semantic Scholar paper not found for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Semantic Scholar Graph API failed for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    return this.parseJSONResponse<SemanticScholarGraphPaper>(xhr);
+  }
+
+  private static async fetchSemanticScholarWebsitePDFCandidates(
+    paperId: string,
+  ): Promise<SemanticScholarPDFCandidate[]> {
+    const candidates: SemanticScholarPDFCandidate[] = [];
+    const pdfDataURL = new URL(
+      `/api/1/paper/${encodeURIComponent(paperId)}/pdf-data`,
+      "https://www.semanticscholar.org",
+    );
+    const xhr = await Zotero.HTTP.request("GET", pdfDataURL.href, {
+      responseType: "json",
+      headers: await this.semanticScholarWebsiteHeaders(),
+      successCodes: false,
+    });
+
+    if (xhr.status === 404) {
+      throw new PDFNotFoundError(
+        `Semantic Scholar website PDF data not found for paper ${paperId}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Semantic Scholar website PDF data failed for paper ${paperId}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    const data = this.parseJSONResponse<SemanticScholarPDFData>(xhr);
+    this.addSemanticScholarPDFCandidate(
+      candidates,
+      data.pdfUrlSelfHosted,
+      "Semantic Scholar self-hosted PDF",
+    );
+    this.addSemanticScholarPDFCandidate(
+      candidates,
+      data.pdfUrl,
+      "Semantic Scholar visible PDF",
+    );
+    if (candidates.length <= 0) {
+      return await this.fetchSemanticScholarPDFVisibilityCandidates(paperId);
+    }
+    return candidates;
+  }
+
+  private static async fetchSemanticScholarPDFVisibilityCandidates(
+    paperId: string,
+  ): Promise<SemanticScholarPDFCandidate[]> {
+    const candidates: SemanticScholarPDFCandidate[] = [];
+    const visibleURL = new URL(
+      `/api/1/paper/${encodeURIComponent(paperId)}/pdf-visible`,
+      "https://www.semanticscholar.org",
+    );
+    const xhr = await Zotero.HTTP.request("GET", visibleURL.href, {
+      responseType: "json",
+      headers: await this.semanticScholarWebsiteHeaders(),
+      successCodes: false,
+    });
+
+    if (xhr.status === 404) {
+      throw new PDFNotFoundError(
+        `Semantic Scholar website PDF visibility not found for paper ${paperId}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Semantic Scholar website PDF visibility failed for paper ${paperId}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    const data = this.parseJSONResponse<SemanticScholarPDFVisible>(xhr);
+    this.addSemanticScholarPDFCandidate(
+      candidates,
+      data.pdfUrlSelfHosted?.url,
+      "Semantic Scholar self-hosted visible PDF",
+    );
+    this.addSemanticScholarPDFCandidate(
+      candidates,
+      data.pdfUrl?.url,
+      "Semantic Scholar visible PDF",
+    );
+    return candidates;
+  }
+
+  private static async searchSemanticScholarPaper(
+    doi: string | undefined,
+    item: Zotero.Item,
+  ): Promise<SemanticScholarSearchPaper> {
+    const title = this.itemTitle(item);
+    const queryString = title || doi;
+    if (!queryString) {
+      throw new PDFNotFoundError("Semantic Scholar search has no DOI or title");
+    }
+
+    const searchURL = new URL(
+      `https://www.semanticscholar.org/search?q=${encodeURIComponent(
+        queryString,
+      )}&sort=relevance`,
+    );
+    const xhr = await Zotero.HTTP.request(
+      "POST",
+      "https://www.semanticscholar.org/api/1/search",
+      {
+        body: JSON.stringify(this.semanticScholarSearchPayload(queryString)),
+        responseType: "json",
+        headers: await this.semanticScholarWebsiteHeaders({
+          "Content-Type": "application/json",
+          Origin: "https://www.semanticscholar.org",
+          Referer: searchURL.href,
+        }),
+        successCodes: false,
+      },
+    );
+
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Semantic Scholar website search failed for ${
+          doi ? `DOI ${doi}` : `title "${title}"`
+        }: ${this.responseSummary(xhr)}`,
+      );
+    }
+
+    const response = this.parseJSONResponse<SemanticScholarSearchResponse>(xhr);
+    const results = response.results ?? [];
+    const normalizedDOI = this.normalizeDOI(doi);
+    const normalizedTitle = this.normalizeTitle(title);
+    const paper =
+      (normalizedDOI
+        ? results.find(
+            (result) =>
+              this.normalizeDOI(result.doiInfo?.doi) === normalizedDOI,
+          )
+        : undefined) ||
+      (normalizedTitle
+        ? results.find(
+            (result) =>
+              this.normalizeTitle(result.title?.text) === normalizedTitle,
+          )
+        : undefined) ||
+      (normalizedTitle &&
+      results[0] &&
+      this.titleLooksLikeMatch(title, results[0].title?.text)
+        ? results[0]
+        : undefined);
+
+    if (!paper) {
+      throw new PDFNotFoundError(
+        `Semantic Scholar website search did not return ${
+          doi ? `DOI ${doi}` : `title "${title}"`
+        }`,
+      );
+    }
+    return paper;
+  }
+
+  private static semanticScholarSearchPayload(queryString: string) {
+    return {
+      queryString,
+      page: 1,
+      pageSize: 10,
+      sort: "relevance",
+      authors: [],
+      coAuthors: [],
+      venues: [],
+      yearFilter: null,
+      requireViewablePdf: false,
+      fieldsOfStudy: [],
+      hydrateWithDdb: true,
+      includeTldrs: true,
+      performTitleMatch: true,
+      includeBadges: true,
+      getQuerySuggestions: false,
+      cues: [
+        "CitedByLibraryPaperCue",
+        "CitesYourPaperCue",
+        "CitesLibraryPaperCue",
+      ],
+      includePdfVisibility: true,
+    };
+  }
+
+  private static addSemanticScholarSearchCandidates(
+    candidates: SemanticScholarPDFCandidate[],
+    paper: SemanticScholarSearchPaper,
+  ) {
+    if (paper.openAccessInfo?.location?.isPdf) {
+      this.addSemanticScholarPDFCandidate(
+        candidates,
+        paper.openAccessInfo.location.url,
+        "Semantic Scholar search open-access PDF",
+      );
+    }
+    const links = [
+      paper.primaryPaperLink,
+      ...(paper.alternatePaperLinks ?? []),
+    ];
+    for (const link of links) {
+      const linkType = link?.linkType?.toLowerCase();
+      if (
+        linkType === "arxiv" ||
+        linkType === "openaccess" ||
+        link?.url?.toLowerCase().includes(".pdf") ||
+        link?.url?.toLowerCase().includes("/pdf/")
+      ) {
+        this.addSemanticScholarPDFCandidate(
+          candidates,
+          link?.url,
+          `Semantic Scholar search ${linkType || "PDF link"}`,
+        );
+      }
+    }
+  }
+
+  private static addSemanticScholarPDFCandidates(
+    target: SemanticScholarPDFCandidate[],
+    source: SemanticScholarPDFCandidate[],
+  ) {
+    for (const candidate of source) {
+      this.addSemanticScholarPDFCandidate(
+        target,
+        candidate.url.href,
+        candidate.source,
+      );
+    }
+  }
+
+  private static addSemanticScholarArxivCandidate(
+    candidates: SemanticScholarPDFCandidate[],
+    arxivID: string | number | undefined,
+    source: string,
+  ) {
+    if (typeof arxivID !== "string" || !arxivID.trim()) {
+      return;
+    }
+    const cleanID = arxivID.trim().replace(/^arxiv:/i, "");
+    const pdfPath = cleanID.toLowerCase().endsWith(".pdf")
+      ? cleanID
+      : `${cleanID}.pdf`;
+    this.addSemanticScholarPDFCandidate(
+      candidates,
+      `https://arxiv.org/pdf/${pdfPath}`,
+      source,
+    );
+  }
+
+  private static addSemanticScholarPDFCandidate(
+    candidates: SemanticScholarPDFCandidate[],
+    rawURL: string | undefined,
+    source: string,
+  ) {
+    if (!rawURL) {
+      return;
+    }
+    try {
+      const pdfURL = new URL(rawURL, "https://www.semanticscholar.org");
+      if (!["http:", "https:"].includes(pdfURL.protocol)) {
+        return;
+      }
+      if (pdfURL.hostname === "export.arxiv.org") {
+        pdfURL.hostname = "arxiv.org";
+      }
+      if (
+        pdfURL.hostname === "pdfs.semanticscholar.org" &&
+        !pdfURL.searchParams.has("skipShowableCheck")
+      ) {
+        pdfURL.searchParams.set("skipShowableCheck", "true");
+      }
+      if (!candidates.some((candidate) => candidate.url.href === pdfURL.href)) {
+        candidates.push({ url: pdfURL, source });
+      }
+    } catch (error) {
+      ztoolkit.log(
+        `semantic-scholar: skipped invalid PDF candidate ${rawURL}: ${this.formatError(
+          error,
+        )}`,
+      );
+    }
+  }
+
+  private static async semanticScholarWebsiteHeaders(
+    extraHeaders: Record<string, string> = {},
+  ) {
+    return this.semanticScholarHeaders({
+      Accept: "application/json",
+      "Cache-Control": "no-cache,no-store,must-revalidate,max-age=-1",
+      "X-S2-Client": "webapp-browser",
+      "X-S2-UI-Version": await this.semanticScholarUIVersion(),
+      ...extraHeaders,
+    });
+  }
+
+  private static async semanticScholarUIVersion() {
+    if (this.semanticScholarUIVersionCache) {
+      return this.semanticScholarUIVersionCache;
+    }
+
+    const xhr = await Zotero.HTTP.request(
+      "GET",
+      "https://www.semanticscholar.org/search?q=semantic%20scholar&sort=relevance",
+      {
+        headers: this.semanticScholarHeaders({
+          Accept: "text/html,application/xhtml+xml",
+        }),
+        successCodes: false,
+      },
+    );
+    const html = this.responseText(xhr);
+    const match = html.match(
+      /cdn\.semanticscholar\.org\/([^/]+)\/js\/BrowserEntry\.tsx\.js/,
+    );
+    this.semanticScholarUIVersionCache =
+      match?.[1] || "00b7315f9df88896bcbc322bb8ddce275c4d4ef8";
+    return this.semanticScholarUIVersionCache;
+  }
+
+  private static semanticScholarHeaders(
+    extraHeaders: Record<string, string> = {},
+  ) {
+    return {
+      "User-Agent": this.semanticScholarUserAgent,
+      ...extraHeaders,
+    };
+  }
+
+  private static normalizeDOI(doi: string | null | undefined) {
+    return (doi ?? "")
+      .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
+      .trim()
+      .toLowerCase();
+  }
+
+  private static normalizeTitle(title: string | null | undefined) {
+    return (title ?? "")
+      .toLowerCase()
+      .replace(/[\u2010-\u2015]/g, "-")
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  private static titleLooksLikeMatch(
+    expected: string | null | undefined,
+    actual: string | null | undefined,
+  ) {
+    const expectedTitle = this.normalizeTitle(expected);
+    const actualTitle = this.normalizeTitle(actual);
+    if (!expectedTitle || !actualTitle) {
+      return false;
+    }
+    return (
+      expectedTitle === actualTitle ||
+      actualTitle.includes(expectedTitle) ||
+      expectedTitle.includes(actualTitle)
+    );
+  }
+
+  private static itemTitle(item: Zotero.Item) {
+    return String(
+      item.getField("title") || item.getDisplayTitle() || "",
+    ).trim();
+  }
+
+  private static formatFetchFailure(error: unknown) {
+    if (error instanceof PDFNotFoundError) {
+      return error.message;
+    }
+    return this.formatError(error);
   }
 
   private static async fetchSciHubDocument(scihubUrl: URL) {
@@ -550,7 +1199,8 @@ export class SciHubFetcher {
   private static responseSummary(xhr: XMLHttpRequest) {
     const statusText = xhr.statusText ? ` ${xhr.statusText}` : "";
     const title = this.responseTitle(xhr.responseXML);
-    const snippet = this.responseSnippet(xhr.responseXML);
+    const snippet =
+      this.responseSnippet(xhr.responseXML) || this.responseTextSnippet(xhr);
     return [
       `HTTP ${xhr.status}${statusText}`,
       title ? `title=${title}` : undefined,
@@ -570,6 +1220,31 @@ export class SciHubFetcher {
   private static responseSnippet(doc: Document | null | undefined) {
     const bodyText = this.compactText(doc?.querySelector("body")?.textContent);
     return bodyText.slice(0, 500);
+  }
+
+  private static responseTextSnippet(xhr: XMLHttpRequest) {
+    return this.compactText(this.responseText(xhr)).slice(0, 500);
+  }
+
+  private static responseText(xhr: XMLHttpRequest) {
+    try {
+      if (xhr.responseText) {
+        return xhr.responseText;
+      }
+    } catch {
+      // responseText is unavailable for some responseType values.
+    }
+    if (typeof xhr.response === "string") {
+      return xhr.response;
+    }
+    if (xhr.response) {
+      try {
+        return JSON.stringify(xhr.response);
+      } catch {
+        return String(xhr.response);
+      }
+    }
+    return "";
   }
 
   private static compactText(text: string | null | undefined) {
