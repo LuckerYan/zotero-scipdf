@@ -54,11 +54,36 @@ interface OpenAlexWorkResponse {
   locations?: OpenAlexLocation[];
 }
 
+interface UnpaywallLocation {
+  host_type?: string | null;
+  is_best?: boolean;
+  url?: string | null;
+  url_for_landing_page?: string | null;
+  url_for_pdf?: string | null;
+  version?: string | null;
+}
+
+interface UnpaywallResponse {
+  best_oa_location?: UnpaywallLocation | null;
+  doi?: string | null;
+  doi_url?: string | null;
+  first_oa_location?: UnpaywallLocation | null;
+  is_oa?: boolean;
+  oa_locations?: UnpaywallLocation[];
+  oa_status?: string | null;
+  title?: string | null;
+}
+
 type FetchPlatform =
   | {
       id: string;
       label: string;
       type: "semantic-scholar";
+    }
+  | {
+      id: string;
+      label: string;
+      type: "unpaywall";
     }
   | {
       id: string;
@@ -279,6 +304,16 @@ export class SciHubFetcher {
           } catch (error) {
             platformErrors.push(error);
           }
+        } else if (platform.type === "unpaywall") {
+          for (const doi of dois) {
+            try {
+              await this.fetchUnpaywallPDF(doi, item);
+              success = true;
+              break;
+            } catch (error) {
+              platformErrors.push(error);
+            }
+          }
         } else if (platform.type === "openalex") {
           for (const doi of dois) {
             try {
@@ -472,6 +507,16 @@ export class SciHubFetcher {
     }
 
     if (dois.length > 0) {
+      platforms.push({
+        id: "unpaywall.org",
+        label: "Unpaywall",
+        value: {
+          id: "unpaywall.org",
+          label: "Unpaywall",
+          type: "unpaywall",
+        },
+      });
+
       platforms.push({
         id: "openalex.org",
         label: "OpenAlex",
@@ -812,6 +857,142 @@ export class SciHubFetcher {
     } catch (error) {
       ztoolkit.log(
         `openalex: skipped invalid PDF candidate ${rawURL}: ${this.formatError(
+          error,
+        )}`,
+      );
+    }
+  }
+
+  private static async fetchUnpaywallPDF(doi: string, item: Zotero.Item) {
+    const normalizedDOI = this.normalizeDOI(doi);
+    const data = await this.fetchUnpaywallByDOI(normalizedDOI);
+    const candidates = this.unpaywallPDFCandidates(data);
+
+    if (candidates.length <= 0) {
+      const details = [
+        `Unpaywall PDF not found for DOI ${normalizedDOI}`,
+        data.is_oa === false ? "is_oa=false" : undefined,
+        data.oa_status ? `oa_status=${data.oa_status}` : undefined,
+        data.best_oa_location?.url_for_landing_page
+          ? `landing_page_without_pdf=${data.best_oa_location.url_for_landing_page}`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join("; ");
+      throw new PDFNotFoundError(details);
+    }
+
+    const attachErrors: unknown[] = [];
+    for (const candidate of candidates) {
+      try {
+        ztoolkit.log(
+          `unpaywall: importing ${candidate.source} PDF ${candidate.url.href}`,
+        );
+        await Utils.attachRemotePDF(candidate.url, item);
+        return;
+      } catch (error) {
+        attachErrors.push(
+          new Error(
+            `Unpaywall candidate failed (${candidate.source}, ${candidate.url.href}): ${this.formatError(
+              error,
+            )}`,
+          ),
+        );
+      }
+    }
+
+    throw new Error(
+      `Unpaywall PDF candidates failed for DOI ${normalizedDOI}:\n${attachErrors
+        .map((error) => this.formatError(error))
+        .join("\n\n")}`,
+    );
+  }
+
+  private static async fetchUnpaywallByDOI(
+    doi: string,
+  ): Promise<UnpaywallResponse> {
+    const apiURL = new URL(
+      `/v2/${encodeURIComponent(doi)}`,
+      "https://api.unpaywall.org",
+    );
+    apiURL.searchParams.set("email", "scipdf@ytshen.com");
+
+    const xhr = await Zotero.HTTP.request("GET", apiURL.href, {
+      responseType: "json",
+      headers: this.semanticScholarHeaders({
+        Accept: "application/json",
+        Origin: "https://unpaywall.org",
+        Referer: "https://unpaywall.org/",
+      }),
+      successCodes: false,
+    });
+
+    if (xhr.status === 404) {
+      throw new PDFNotFoundError(
+        `Unpaywall work not found for DOI ${doi}: ${this.responseSummary(xhr)}`,
+      );
+    }
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Unpaywall DOI lookup failed for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    const data = this.parseJSONResponse<UnpaywallResponse>(xhr);
+    const returnedDOI = this.normalizeDOI(data.doi);
+    if (returnedDOI && returnedDOI !== doi) {
+      throw new PDFNotFoundError(
+        `Unpaywall DOI mismatch for DOI ${doi}: returned ${returnedDOI}`,
+      );
+    }
+    return data;
+  }
+
+  private static unpaywallPDFCandidates(
+    data: UnpaywallResponse,
+  ): SemanticScholarPDFCandidate[] {
+    const candidates: SemanticScholarPDFCandidate[] = [];
+    this.addUnpaywallPDFCandidate(
+      candidates,
+      data.best_oa_location?.url_for_pdf,
+      "Unpaywall best_oa_location.url_for_pdf",
+    );
+    this.addUnpaywallPDFCandidate(
+      candidates,
+      data.first_oa_location?.url_for_pdf,
+      "Unpaywall first_oa_location.url_for_pdf",
+    );
+    for (const location of data.oa_locations ?? []) {
+      this.addUnpaywallPDFCandidate(
+        candidates,
+        location.url_for_pdf,
+        "Unpaywall oa_locations[].url_for_pdf",
+      );
+    }
+    return candidates;
+  }
+
+  private static addUnpaywallPDFCandidate(
+    candidates: SemanticScholarPDFCandidate[],
+    rawURL: string | null | undefined,
+    source: string,
+  ) {
+    if (!rawURL) {
+      return;
+    }
+    try {
+      const pdfURL = new URL(rawURL);
+      if (!["http:", "https:"].includes(pdfURL.protocol)) {
+        return;
+      }
+      if (!candidates.some((candidate) => candidate.url.href === pdfURL.href)) {
+        candidates.push({ url: pdfURL, source });
+      }
+    } catch (error) {
+      ztoolkit.log(
+        `unpaywall: skipped invalid PDF candidate ${rawURL}: ${this.formatError(
           error,
         )}`,
       );
