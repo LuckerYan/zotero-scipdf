@@ -185,7 +185,7 @@ export class SciHubFetcher {
         Utils.showPopWin(
           getString("popwin-doimissing"),
           item.getDisplayTitle(),
-          "fail",
+          "warning",
         );
         ztoolkit.log(`DOI/Title Not Found for "${item.getField("title")}"`);
         continue;
@@ -219,23 +219,11 @@ export class SciHubFetcher {
         const platformErrors: unknown[] = [];
 
         if (platform.type === "semantic-scholar") {
-          if (dois.length > 0) {
-            for (const doi of dois) {
-              try {
-                await this.fetchSemanticScholarPDF(doi, item);
-                success = true;
-                break;
-              } catch (error) {
-                platformErrors.push(error);
-              }
-            }
-          } else {
-            try {
-              await this.fetchSemanticScholarPDF(undefined, item);
-              success = true;
-            } catch (error) {
-              platformErrors.push(error);
-            }
+          try {
+            await this.fetchSemanticScholarPDF(undefined, item);
+            success = true;
+          } catch (error) {
+            platformErrors.push(error);
           }
         } else {
           for (const doi of dois) {
@@ -304,7 +292,7 @@ export class SciHubFetcher {
         Utils.showPopWin(
           getString("popwin-pdfnotavaliable"),
           item.getDisplayTitle(),
-          "fail",
+          "warning",
           5000,
         );
       } else {
@@ -394,7 +382,7 @@ export class SciHubFetcher {
     title: string,
   ): PlatformCandidate<FetchPlatform>[] {
     const platforms: PlatformCandidate<FetchPlatform>[] = [];
-    if (dois.length > 0 || title) {
+    if (title) {
       platforms.push({
         id: "semanticscholar.org",
         label: "Semantic Scholar",
