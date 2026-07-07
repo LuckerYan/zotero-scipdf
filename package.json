@@ -21,11 +21,12 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",
-    "build": "zotero-plugin build && tsc --noEmit",
+    "build": "zotero-plugin build && tsc --noEmit && node scripts/pack-xpi.mjs",
+    "pack:xpi": "node scripts/pack-xpi.mjs",
     "lint:check": "prettier --check . && eslint .",
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
-    "test": "zotero-plugin test",
+    "test": "node scripts/test-and-pack-xpi.mjs",
     "update-deps": "npm update --save"
   },
   "dependencies": {
