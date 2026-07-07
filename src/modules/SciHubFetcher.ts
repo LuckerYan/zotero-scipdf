@@ -747,7 +747,114 @@ export class SciHubFetcher {
 
     const pdfURL = new URL(data.url, "https://fast.wbleb.com");
     pdfURL.protocol = "https:";
+    await this.assertSciHubWorldPDFCandidate(pdfURL, scihubUrl);
     await Utils.attachRemotePDF(pdfURL, item);
+  }
+
+  private static async assertSciHubWorldPDFCandidate(
+    pdfURL: URL,
+    scihubUrl: URL,
+  ) {
+    const rawFileName = pdfURL.pathname.split("/").pop() || "";
+    let fileName = rawFileName;
+    try {
+      fileName = decodeURIComponent(rawFileName);
+    } catch {
+      // Keep the raw file name if the URL contains malformed escapes.
+    }
+
+    if (fileName.toLowerCase() === "sci.pdf") {
+      const message = `PDF not found at ${scihubUrl.href}: sci-hub.world API returned placeholder ${pdfURL.href}, not the requested paper`;
+      ztoolkit.log(`scihub: ${message}`);
+      throw new PDFNotFoundError(message);
+    }
+
+    const probeXHR = await Zotero.HTTP.request("GET", pdfURL.href, {
+      responseType: "arraybuffer",
+      headers: {
+        "User-Agent": this.semanticScholarUserAgent,
+        Accept: "application/pdf,*/*;q=0.8",
+        Range: "bytes=0-1048575",
+        Referer: "https://sci-hub.world/zh",
+      },
+      successCodes: false,
+    });
+
+    if (probeXHR.status !== 200 && probeXHR.status !== 206) {
+      throw new Error(
+        `sci-hub.world PDF probe failed for ${pdfURL.href}: HTTP ${probeXHR.status}; ${this.responseTextSnippet(
+          probeXHR,
+        )}`,
+      );
+    }
+
+    const bytes = this.bytesFromXHRResponse(probeXHR.response);
+    if (bytes.length <= 0) {
+      throw new Error(
+        `sci-hub.world PDF probe returned an empty body for ${pdfURL.href}`,
+      );
+    }
+
+    const pdfHeader = this.latin1FromBytes(bytes.subarray(0, 5));
+    if (pdfHeader !== "%PDF-") {
+      throw new Error(
+        `sci-hub.world PDF probe returned non-PDF content for ${pdfURL.href}: HTTP ${probeXHR.status}; content-type=${
+          probeXHR.getResponseHeader("Content-Type") || ""
+        }`,
+      );
+    }
+
+    const probeHash = this.sha256BytesHex(bytes);
+    if (
+      probeHash ===
+      "9e422f86b9b632d2ebd4574747d12344e18c01abaa4f5ee2a9de185a6faa0d53"
+    ) {
+      const message = `PDF not found at ${scihubUrl.href}: sci-hub.world returned its default Sci-Hub tokenomics placeholder PDF (${pdfURL.href})`;
+      ztoolkit.log(`scihub: ${message}`);
+      throw new PDFNotFoundError(message);
+    }
+  }
+
+  private static bytesFromXHRResponse(response: XMLHttpRequest["response"]) {
+    if (response instanceof ArrayBuffer) {
+      return new Uint8Array(response);
+    }
+    if (ArrayBuffer.isView(response)) {
+      return new Uint8Array(
+        response.buffer,
+        response.byteOffset,
+        response.byteLength,
+      );
+    }
+    if (typeof response === "string") {
+      const bytes = new Uint8Array(response.length);
+      for (let index = 0; index < response.length; index++) {
+        bytes[index] = response.charCodeAt(index) & 0xff;
+      }
+      return bytes;
+    }
+    return new Uint8Array();
+  }
+
+  private static latin1FromBytes(bytes: Uint8Array) {
+    let value = "";
+    for (let index = 0; index < bytes.length; index++) {
+      value += String.fromCharCode(bytes[index]);
+    }
+    return value;
+  }
+
+  private static sha256BytesHex(bytes: Uint8Array) {
+    const chunks: string[] = [];
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      const end = Math.min(offset + 8192, bytes.length);
+      let chunk = "";
+      for (let index = offset; index < end; index++) {
+        chunk += String.fromCharCode(bytes[index]);
+      }
+      chunks.push(chunk);
+    }
+    return this.sha256Hex(chunks.join(""));
   }
 
   private static async fetchOpenAlexPDF(doi: string, item: Zotero.Item) {
