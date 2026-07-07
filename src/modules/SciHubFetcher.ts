@@ -1,6 +1,7 @@
 import { getString } from "../utils/locale";
 import { Utils } from "../utils/utils";
 import { CustomResolverManager } from "./CustomResolverManager";
+import { DDoSGuardSolver } from "./DDoSGuardSolver";
 import {
   PlatformWeightManager,
   type PlatformCandidate,
@@ -52,6 +53,18 @@ interface AltchaSolution {
 
 interface AltchaSolutionResponse {
   success?: boolean;
+}
+
+interface KvnpTopStatusResponse {
+  status?: "processing" | "completed" | "error" | string;
+  message?: string;
+  data?: {
+    doi?: string | null;
+    pdf_url?: string | null;
+    title?: string | null;
+  } | null;
+  reason?: string | null;
+  official_pdf?: string | null;
 }
 
 interface SemanticScholarGraphPaper {
@@ -122,6 +135,9 @@ export class SciHubFetcher {
     /статья не найдена в базе/im,
     /未找到与您的请求匹配的文章/im,
     /未找到.*(?:文章|论文|文献|PDF)/im,
+    /(?:该|这|此)?(?:文章|论文|文献).*?Sci-?Hub.*?不可用/im,
+    /(?:文章|论文|文献|PDF).*?(?:不可用|找不到|没有找到)/im,
+    /(?:不可用|找不到|没有找到).*?(?:文章|论文|文献|PDF)/im,
     /(?:article|paper|document|PDF)\s+(?:not\s+found|not\s+available|unavailable)/im,
     /(?:not\s+found|not\s+available|unavailable).*?(?:article|paper|document|PDF)/im,
     /could\s+not\s+find/im,
@@ -258,16 +274,16 @@ export class SciHubFetcher {
 
         if (platformErrors.length > 0) {
           const primaryError =
-            platformErrors.find(
-              (error) => !(error instanceof PDFNotFoundError),
-            ) ?? platformErrors[0];
+            platformErrors.find((error) => !this.asPDFNotFoundError(error)) ??
+            platformErrors[0];
           PlatformWeightManager.record(
             platform.id,
             this.classifyPlatformFailure(primaryError),
           );
           for (const error of platformErrors) {
-            if (error instanceof PDFNotFoundError) {
-              notFoundErrors.push(error);
+            const notFoundError = this.asPDFNotFoundError(error);
+            if (notFoundError) {
+              notFoundErrors.push(notFoundError);
             } else {
               errors.push(error);
             }
@@ -277,18 +293,32 @@ export class SciHubFetcher {
 
       win.close();
 
+      const onlyNonDecisiveErrors =
+        errors.length > 0 &&
+        errors.every((error) => this.isNonDecisivePlatformFailure(error));
+
       if (success) {
         Utils.showPopWin(
           getString("popwin-fetchsuccess"),
           item.getDisplayTitle(),
           "success",
         );
-      } else if (errors.length <= 0 && notFoundErrors.length > 0) {
+      } else if (
+        notFoundErrors.length > 0 &&
+        (errors.length <= 0 || onlyNonDecisiveErrors)
+      ) {
         ztoolkit.log(
           `sci-pdf: PDF not found for "${item.getDisplayTitle()}": ${notFoundErrors
             .map((error) => error.message)
             .join("\n")}`,
         );
+        if (onlyNonDecisiveErrors) {
+          ztoolkit.log(
+            `sci-pdf: suppressing non-decisive platform failure(s) after PDF-not-found decision for "${item.getDisplayTitle()}":\n${errors
+              .map((error) => this.formatFetchFailure(error))
+              .join("\n\n")}`,
+          );
+        }
         Utils.showPopWin(
           getString("popwin-pdfnotavaliable"),
           item.getDisplayTitle(),
@@ -413,19 +443,88 @@ export class SciHubFetcher {
   }
 
   private static async fetchPDF(scihubUrl: URL, item: Zotero.Item) {
-    let xhr = await this.fetchSciHubDocument(scihubUrl);
+    let ddgHeaders: Record<string, string> = {};
+    let xhr = await this.fetchSciHubDocument(scihubUrl, ddgHeaders);
+    const initialDdgHeaders = await this.solveDDoSGuardIfPresent(
+      xhr,
+      scihubUrl,
+    );
+    if (initialDdgHeaders) {
+      ddgHeaders = initialDdgHeaders;
+      xhr = await this.fetchSciHubDocument(scihubUrl, ddgHeaders);
+    }
+
     let pdfUrl = this.extractPDFURL(xhr.responseXML, scihubUrl.href);
+    if (!pdfUrl) {
+      pdfUrl = await this.resolveKvnpTopPDFURL(xhr, scihubUrl);
+    }
     let body = xhr.responseXML?.querySelector("body");
 
     if (xhr.status === 200 && !pdfUrl) {
       const solved = await this.solveAltchaChallengeIfPresent(
         xhr.responseXML,
         scihubUrl.href,
+        ddgHeaders,
       );
       if (solved) {
-        xhr = await this.fetchSciHubDocument(scihubUrl);
+        xhr = await this.fetchSciHubDocument(scihubUrl, ddgHeaders);
         pdfUrl = this.extractPDFURL(xhr.responseXML, scihubUrl.href);
+        if (!pdfUrl) {
+          pdfUrl = await this.resolveKvnpTopPDFURL(xhr, scihubUrl);
+        }
         body = xhr.responseXML?.querySelector("body");
+      }
+    }
+
+    if (
+      (xhr.status === 200 || xhr.status === 404) &&
+      !pdfUrl &&
+      this.shouldTrySciHubFormFallback(xhr, scihubUrl)
+    ) {
+      try {
+        xhr = await this.fetchSciHubFormDocument(scihubUrl, ddgHeaders);
+        const formDdgHeaders = await this.solveDDoSGuardIfPresent(
+          xhr,
+          scihubUrl,
+        );
+        if (formDdgHeaders) {
+          ddgHeaders = formDdgHeaders;
+          xhr = await this.fetchSciHubFormDocument(scihubUrl, ddgHeaders);
+        }
+
+        pdfUrl = this.extractPDFURL(xhr.responseXML, scihubUrl.href);
+        if (!pdfUrl) {
+          pdfUrl = await this.resolveKvnpTopPDFURL(xhr, scihubUrl);
+        }
+        body = xhr.responseXML?.querySelector("body");
+
+        if (xhr.status === 200 && !pdfUrl) {
+          const solved = await this.solveAltchaChallengeIfPresent(
+            xhr.responseXML,
+            scihubUrl.href,
+            ddgHeaders,
+          );
+          if (solved) {
+            xhr = await this.fetchSciHubDocument(scihubUrl, ddgHeaders);
+            pdfUrl = this.extractPDFURL(xhr.responseXML, scihubUrl.href);
+            if (!pdfUrl) {
+              pdfUrl = await this.resolveKvnpTopPDFURL(xhr, scihubUrl);
+            }
+            body = xhr.responseXML?.querySelector("body");
+          }
+        }
+      } catch (error) {
+        if (
+          error instanceof PDFNotFoundError ||
+          scihubUrl.hostname.toLowerCase() === "sci-hub.kvnp.top"
+        ) {
+          throw error;
+        }
+        ztoolkit.log(
+          `scihub: form POST fallback failed for ${scihubUrl.href}: ${this.formatError(
+            error,
+          )}`,
+        );
       }
     }
 
@@ -436,7 +535,9 @@ export class SciHubFetcher {
 
     if (
       (xhr.status === 200 || xhr.status === 404) &&
-      (this.pdfNotAvailable(body) || this.sciHubLandingWithoutPDF(xhr))
+      (this.pdfNotAvailable(body) ||
+        this.sciHubLandingWithoutPDF(xhr) ||
+        this.sciHubHTMLWithoutPDF(xhr))
     ) {
       const message = `PDF not found at ${scihubUrl.href}: ${this.responseSummary(xhr)}`;
       ztoolkit.log(`scihub: ${message}`);
@@ -991,16 +1092,54 @@ export class SciHubFetcher {
     return this.formatError(error);
   }
 
+  private static asPDFNotFoundError(
+    error: unknown,
+  ): PDFNotFoundError | undefined {
+    if (error instanceof PDFNotFoundError) {
+      return error;
+    }
+
+    const message = this.formatError(error);
+    if (
+      /Failed to fetch PDF from https?:\/\//i.test(message) &&
+      /HTTP (?:200|404)\b/i.test(message) &&
+      !/captcha|altcha|robot|human|cloudflare|turnstile|ddos-guard|forbidden|blocked|verify|verification|challenge|access denied|too many requests|rate limit/i.test(
+        message,
+      ) &&
+      /(sci-?hub|scihub|Academic Paper|free access to research papers|ScienceDirect|首页|主页|科研论文|论文求助|网站地图|Loading|not found|not available|no pdf|article unavailable|could not find|unavailable|不可用|找不到|没有找到)/i.test(
+        message,
+      )
+    ) {
+      return new PDFNotFoundError(message);
+    }
+
+    return undefined;
+  }
+
+  private static isNonDecisivePlatformFailure(error: unknown): boolean {
+    return ["captcha", "blocked", "rateLimited", "networkError"].includes(
+      this.classifyPlatformFailure(error),
+    );
+  }
+
   private static classifyPlatformFailure(error: unknown): PlatformOutcome {
     if (error instanceof PDFNotFoundError) {
       return "notFound";
     }
 
     const message = this.formatError(error).toLowerCase();
-    if (/captcha|altcha|robot|human|challenge|verify/.test(message)) {
+    if (
+      /captcha|altcha|robot|human|turnstile|challenge|verify|verification|are you are robot|are you a robot/.test(
+        message,
+      )
+    ) {
       return "captcha";
     }
-    if (/\b403\b|forbidden|blocked|cloudflare|access denied/.test(message)) {
+    if (
+      /\b403\b|forbidden|blocked|cloudflare|access denied|ddos-guard|just a moment/.test(
+        message,
+      )
+    ) {
       return "blocked";
     }
     if (/\b429\b|rate limit|too many requests/.test(message)) {
@@ -1020,10 +1159,247 @@ export class SciHubFetcher {
     return "error";
   }
 
-  private static async fetchSciHubDocument(scihubUrl: URL) {
+  private static async fetchSciHubFormDocument(
+    scihubUrl: URL,
+    extraHeaders: Record<string, string> = {},
+  ) {
+    const baseURL = new URL("/", scihubUrl.href);
+    const doi = this.sciHubDOIFromURL(scihubUrl);
+    const formData = new URLSearchParams();
+    if (scihubUrl.hostname.toLowerCase() === "sci-hub.kvnp.top") {
+      formData.set("sci-hub-plugin-check", "");
+    }
+    formData.set("request", doi);
+
+    ztoolkit.log(`scihub: trying form POST fallback at ${baseURL.href}`);
+    const xhr = await Zotero.HTTP.request("POST", baseURL.href, {
+      body: formData.toString(),
+      responseType: "document",
+      headers: this.requestHeaders({
+        ...extraHeaders,
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: baseURL.href,
+      }),
+      successCodes: false,
+    });
+    return await this.followSciHubRedirect(xhr, baseURL.href, extraHeaders);
+  }
+
+  private static async followSciHubRedirect(
+    xhr: XMLHttpRequest,
+    baseURL: string,
+    extraHeaders: Record<string, string> = {},
+  ) {
+    if (xhr.status < 300 || xhr.status >= 400) {
+      return xhr;
+    }
+
+    const location = xhr.getResponseHeader("Location");
+    if (!location) {
+      return xhr;
+    }
+
+    const redirectURL = new URL(location, baseURL);
+    ztoolkit.log(`scihub: following redirect to ${redirectURL.href}`);
+    return await this.fetchSciHubDocument(redirectURL, extraHeaders);
+  }
+
+  private static shouldTrySciHubFormFallback(
+    xhr: XMLHttpRequest,
+    scihubUrl: URL,
+  ): boolean {
+    if (!this.supportsSciHubFormPost(scihubUrl)) {
+      return false;
+    }
+    if (xhr.status !== 200 && xhr.status !== 404) {
+      return false;
+    }
+    if (this.responseLooksPDFNotAvailable(xhr)) {
+      return false;
+    }
+
+    const text = this.sciHubResponseText(xhr);
+    if (
+      /captcha|altcha|robot|human|cloudflare|turnstile|forbidden|blocked|verify|verification|challenge|access denied|too many requests|rate limit|ddos-guard/i.test(
+        text,
+      )
+    ) {
+      return false;
+    }
+
+    return this.sciHubLandingWithoutPDF(xhr) || this.sciHubHTMLWithoutPDF(xhr);
+  }
+
+  private static supportsSciHubFormPost(scihubUrl: URL): boolean {
+    return [
+      "sci-hub.kvnp.top",
+      "sci-hub.ru",
+      "sci-hub.su",
+      "sci-hub.st",
+      "sci-hub.red",
+      "sci-hub.box",
+      "sci-hub.ren",
+      "sci-hub.ee",
+    ].includes(scihubUrl.hostname.toLowerCase());
+  }
+
+  private static sciHubDOIFromURL(scihubUrl: URL): string {
+    const doi = decodeURIComponent(scihubUrl.pathname.replace(/^\/+/, ""));
+    return doi || scihubUrl.href;
+  }
+
+  private static async resolveKvnpTopPDFURL(
+    xhr: XMLHttpRequest,
+    scihubUrl: URL,
+  ): Promise<URL | undefined> {
+    if (scihubUrl.hostname.toLowerCase() !== "sci-hub.kvnp.top") {
+      return undefined;
+    }
+
+    const taskID = this.extractKvnpTopTaskID(xhr);
+    if (!taskID) {
+      return undefined;
+    }
+
+    ztoolkit.log(`scihub: polling sci-hub.kvnp.top task ${taskID}`);
+    return await this.pollKvnpTopPDFURL(scihubUrl, taskID);
+  }
+
+  private static extractKvnpTopTaskID(xhr: XMLHttpRequest): string | undefined {
+    const scriptText = xhr.responseXML
+      ? Array.from<HTMLScriptElement>(
+          xhr.responseXML.querySelectorAll(
+            "script",
+          ) as NodeListOf<HTMLScriptElement>,
+        )
+          .map((script) => script.textContent ?? "")
+          .join("\n")
+      : "";
+    const text = `${scriptText}\n${this.responseText(xhr)}`;
+    return (
+      text.match(/taskId\s*=\s*["']([A-Za-z0-9_-]{8,128})["']/)?.[1] ??
+      text.match(/task_id[=:]\s*["']?([A-Za-z0-9_-]{8,128})/i)?.[1]
+    );
+  }
+
+  private static async pollKvnpTopPDFURL(
+    scihubUrl: URL,
+    taskID: string,
+  ): Promise<URL | undefined> {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (attempt > 0) {
+        await this.sleep(1500);
+      }
+
+      const statusURL = new URL(
+        `/api/check-status?task_id=${encodeURIComponent(taskID)}`,
+        scihubUrl.href,
+      );
+      const xhr = await Zotero.HTTP.request("GET", statusURL.href, {
+        responseType: "json",
+        headers: this.requestHeaders({ Accept: "application/json" }),
+        successCodes: false,
+      });
+      if (xhr.status !== 200) {
+        throw new Error(
+          `sci-hub.kvnp.top task ${taskID} status check failed: ${this.responseSummary(
+            xhr,
+          )}`,
+        );
+      }
+
+      const status = this.parseJSONResponse<KvnpTopStatusResponse>(xhr);
+      const pdfURL = status.data?.pdf_url || status.official_pdf || undefined;
+      if (status.status === "completed") {
+        if (pdfURL) {
+          return new URL(pdfURL, scihubUrl.href);
+        }
+        throw new Error(
+          `sci-hub.kvnp.top task ${taskID} completed without pdf_url`,
+        );
+      }
+
+      if (status.status === "error") {
+        const message = status.message || "PDF download failed";
+        if (status.reason === "not_found" || /not[_ -]?found/i.test(message)) {
+          throw new PDFNotFoundError(
+            `PDF not found at ${scihubUrl.href}: sci-hub.kvnp.top task ${taskID} returned ${message}`,
+          );
+        }
+        throw new Error(
+          `sci-hub.kvnp.top task ${taskID} failed: ${message}${
+            status.reason ? ` (${status.reason})` : ""
+          }`,
+        );
+      }
+    }
+
+    throw new Error(
+      `sci-hub.kvnp.top task ${taskID} did not finish before timeout`,
+    );
+  }
+
+  private static responseLooksPDFNotAvailable(xhr: XMLHttpRequest): boolean {
+    const text = this.sciHubResponseText(xhr);
+    return (
+      this.pdfNotAvailable(xhr.responseXML?.querySelector("body")) ||
+      this.pdfNotAvailableRegexes.some((regex) => regex.test(text))
+    );
+  }
+
+  private static responseLooksDDoSGuard(xhr: XMLHttpRequest): boolean {
+    const title = this.responseTitle(xhr.responseXML).toLowerCase();
+    const text = this.sciHubResponseText(xhr).toLowerCase();
+    return (
+      title.includes("ddos-guard") ||
+      /ddos-guard|checking your browser|well-known\/ddos-guard|js-challenge\/index\.js/.test(
+        text,
+      )
+    );
+  }
+
+  private static async solveDDoSGuardIfPresent(
+    xhr: XMLHttpRequest,
+    scihubUrl: URL,
+  ): Promise<Record<string, string> | null> {
+    if (!this.responseLooksDDoSGuard(xhr)) {
+      return null;
+    }
+
+    try {
+      await DDoSGuardSolver.solve(scihubUrl);
+      return DDoSGuardSolver.requestHeaders();
+    } catch (error) {
+      const message = `DDoS-Guard challenge failed for ${scihubUrl.href}: ${this.formatError(
+        error,
+      )}`;
+      ztoolkit.log(`scihub: ${message}`);
+      throw new Error(message);
+    }
+  }
+
+  private static sciHubResponseText(xhr: XMLHttpRequest): string {
+    const doc = xhr.responseXML;
+    return [
+      this.responseTitle(doc),
+      this.compactText(doc?.querySelector("body")?.textContent),
+      this.responseText(xhr),
+    ].join("\n");
+  }
+
+  private static async sleep(milliseconds: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  private static async fetchSciHubDocument(
+    scihubUrl: URL,
+    extraHeaders: Record<string, string> = {},
+  ) {
     return await Zotero.HTTP.request("GET", scihubUrl.href, {
       responseType: "document",
-      headers: this.requestHeaders(),
+      headers: this.requestHeaders(extraHeaders),
       successCodes: false,
     });
   }
@@ -1038,6 +1414,7 @@ export class SciHubFetcher {
   private static async solveAltchaChallengeIfPresent(
     doc: Document | null | undefined,
     baseURL: string,
+    extraHeaders: Record<string, string> = {},
   ): Promise<boolean> {
     const challengeURL = this.extractAltchaChallengeURL(doc, baseURL);
     if (!challengeURL) {
@@ -1049,7 +1426,10 @@ export class SciHubFetcher {
     );
     try {
       ztoolkit.log(`scihub: solving ALTCHA challenge "${challengeURL.href}"`);
-      const challenge = await this.requestAltchaChallenge(challengeURL);
+      const challenge = await this.requestAltchaChallenge(
+        challengeURL,
+        extraHeaders,
+      );
       const solution = this.solveAltchaChallenge(challenge);
       if (!solution) {
         ztoolkit.log(
@@ -1062,6 +1442,7 @@ export class SciHubFetcher {
         body: JSON.stringify({ captcha: this.encodeAltchaSolution(solution) }),
         responseType: "json",
         headers: this.requestHeaders({
+          ...extraHeaders,
           "Content-Type": "application/json",
           Accept: "application/json",
         }),
@@ -1123,10 +1504,12 @@ export class SciHubFetcher {
 
   private static async requestAltchaChallenge(
     challengeURL: URL,
+    extraHeaders: Record<string, string> = {},
   ): Promise<AltchaChallenge> {
     const xhr = await Zotero.HTTP.request("GET", challengeURL.href, {
       responseType: "json",
       headers: this.requestHeaders({
+        ...extraHeaders,
         Accept: "application/json",
       }),
     });
@@ -1394,7 +1777,13 @@ export class SciHubFetcher {
 
   private static formatError(error: unknown) {
     if (error instanceof Error) {
-      return error.stack || error.message || error.name;
+      const message = error.message || error.name;
+      if (error.stack) {
+        return message && !error.stack.includes(message)
+          ? `${message}\n${error.stack}`
+          : error.stack;
+      }
+      return message;
     }
     if (typeof error === "string") {
       return error;
@@ -1417,6 +1806,57 @@ export class SciHubFetcher {
     return this.pdfNotAvailableRegexes.some((regex) => regex.test(text));
   }
 
+  private static sciHubHTMLWithoutPDF(xhr: XMLHttpRequest): boolean {
+    const doc = xhr.responseXML;
+    const title = this.responseTitle(doc);
+    const bodyText = this.compactText(doc?.querySelector("body")?.textContent);
+    const rawText = this.responseText(xhr);
+    const text = `${title}\n${bodyText}\n${rawText}`;
+    const contentType = xhr.getResponseHeader("content-type") ?? "";
+
+    if (!text.trim() && !doc) {
+      return false;
+    }
+
+    if (
+      this.pdfNotAvailable(doc?.querySelector("body")) ||
+      this.pdfNotAvailableRegexes.some((regex) => regex.test(text)) ||
+      /article\s+is\s+not\s+available\s+through\s+sci-?hub|(?:article|paper|document|PDF)\s+(?:not\s+found|not\s+available|unavailable)|(?:not\s+found|not\s+available|unavailable).*?(?:article|paper|document|PDF)|could\s+not\s+find|no\s+(?:article|paper|document|PDF)\s+(?:found|available)/i.test(
+        text,
+      )
+    ) {
+      return true;
+    }
+
+    // Anti-bot or access-control pages are operational errors, not a true PDF-not-found decision.
+    if (
+      /captcha|altcha|robot|human|cloudflare|turnstile|ddos-guard|forbidden|blocked|verify|verification|challenge|access denied|too many requests|rate limit/i.test(
+        text,
+      )
+    ) {
+      return false;
+    }
+
+    const looksHTML =
+      /html|text\/plain|xml/i.test(contentType) ||
+      Boolean(doc?.querySelector("html, body")) ||
+      /<!doctype html|<html|<body|self\.__next_f|__NEXT_DATA__/i.test(rawText);
+    if (!looksHTML) {
+      return false;
+    }
+
+    if (xhr.status === 404) {
+      return true;
+    }
+
+    return (
+      xhr.status === 200 &&
+      /(sci-?hub|scihub|Academic Paper|free access to research papers|ScienceDirect|首页|主页|科研论文|论文求助|网站地图|Loading|not found|not available|no pdf|article unavailable|could not find|unavailable)/i.test(
+        text,
+      )
+    );
+  }
+
   private static sciHubLandingWithoutPDF(xhr: XMLHttpRequest): boolean {
     const title = this.responseTitle(xhr.responseXML);
     const bodyText = this.compactText(
@@ -1430,9 +1870,19 @@ export class SciHubFetcher {
       return false;
     }
 
+    if (
+      this.pdfNotAvailable(xhr.responseXML?.querySelector("body")) ||
+      this.pdfNotAvailableRegexes.some((regex) => regex.test(text)) ||
+      /article\s+is\s+not\s+available\s+through\s+sci-?hub|(?:article|paper|document|PDF)\s+(?:not\s+found|not\s+available|unavailable)|(?:not\s+found|not\s+available|unavailable).*?(?:article|paper|document|PDF)|could\s+not\s+find|no\s+(?:article|paper|document|PDF)\s+(?:found|available)/i.test(
+        text,
+      )
+    ) {
+      return true;
+    }
+
     // Do not hide real anti-bot/network failures. These should still be surfaced as errors.
     if (
-      /captcha|altcha|robot|human|cloudflare|forbidden|blocked|verify|verification|challenge/i.test(
+      /captcha|altcha|robot|human|cloudflare|turnstile|ddos-guard|forbidden|blocked|verify|verification|challenge/i.test(
         text,
       )
     ) {
