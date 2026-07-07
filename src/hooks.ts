@@ -19,7 +19,7 @@ async function onStartup() {
   initLocale();
 
   const resolverManager = CustomResolverManager.shared;
-  const presetVersion = 3;
+  const presetVersion = 4;
   const legacyPresetHosts = new Set([
     "sci-hub.se",
     "sci-hub.st",

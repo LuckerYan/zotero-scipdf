@@ -16,6 +16,17 @@ class PDFNotFoundError extends Error {
   }
 }
 
+interface SciHubWorldPaperResponse {
+  success?: boolean;
+  doi?: string;
+  url?: string;
+  cached?: boolean;
+  source?: string;
+  detail?: string;
+  message?: string;
+  error?: string;
+}
+
 interface SciHubPlatform {
   id: string;
   baseURL: string;
@@ -386,7 +397,6 @@ export class SciHubFetcher {
             "https://sci-hub.box/",
             "https://sci-hub.st/",
             "https://sci-hub.ren/",
-            "https://sci-hub.ee/",
             "https://sci-hub.world/",
           ];
     return Array.from(new Set(urls));
@@ -443,6 +453,11 @@ export class SciHubFetcher {
   }
 
   private static async fetchPDF(scihubUrl: URL, item: Zotero.Item) {
+    if (scihubUrl.hostname.toLowerCase() === "sci-hub.world") {
+      await this.fetchSciHubWorldPDF(scihubUrl, item);
+      return;
+    }
+
     let ddgHeaders: Record<string, string> = {};
     let xhr = await this.fetchSciHubDocument(scihubUrl, ddgHeaders);
     const initialDdgHeaders = await this.solveDDoSGuardIfPresent(
@@ -547,6 +562,75 @@ export class SciHubFetcher {
     const message = `Failed to fetch PDF from ${scihubUrl.href}: ${this.responseSummary(xhr)}`;
     ztoolkit.log(`scihub: ${message}`);
     throw new Error(message);
+  }
+
+  private static async fetchSciHubWorldPDF(scihubUrl: URL, item: Zotero.Item) {
+    const doi = this.sciHubDOIFromURL(scihubUrl);
+    const apiURL = new URL(
+      `/api/v1/paper/${encodeURIComponent(doi)}`,
+      "https://fast.wbleb.com",
+    );
+
+    const xhr = await Zotero.HTTP.request("GET", apiURL.href, {
+      responseType: "json",
+      headers: {
+        "User-Agent": this.semanticScholarUserAgent,
+        Accept: "application/json",
+        Origin: "https://sci-hub.world",
+        Referer: "https://sci-hub.world/zh",
+      },
+      successCodes: false,
+    });
+
+    let data: SciHubWorldPaperResponse | undefined;
+    try {
+      data = this.parseJSONResponse<SciHubWorldPaperResponse>(xhr);
+    } catch (error) {
+      if (xhr.status === 404) {
+        const message = `PDF not found at ${scihubUrl.href}: sci-hub.world API HTTP 404; ${this.responseTextSnippet(
+          xhr,
+        )}`;
+        ztoolkit.log(`scihub: ${message}`);
+        throw new PDFNotFoundError(message);
+      }
+      throw new Error(
+        `sci-hub.world API returned non-JSON response for ${scihubUrl.href}: ${this.responseSummary(
+          xhr,
+        )}; ${this.formatError(error)}`,
+      );
+    }
+
+    const apiMessage = data.detail || data.message || data.error || "";
+    if (
+      xhr.status === 404 ||
+      /paper not found|not found|no pdf/i.test(apiMessage)
+    ) {
+      const message = `PDF not found at ${scihubUrl.href}: sci-hub.world API HTTP ${xhr.status}; ${
+        apiMessage || this.responseTextSnippet(xhr)
+      }`;
+      ztoolkit.log(`scihub: ${message}`);
+      throw new PDFNotFoundError(message);
+    }
+
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Failed to fetch PDF from ${scihubUrl.href}: sci-hub.world API ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    if (!data.success || !data.url) {
+      const message = `PDF not found at ${scihubUrl.href}: sci-hub.world API returned no PDF URL; ${this.responseTextSnippet(
+        xhr,
+      )}`;
+      ztoolkit.log(`scihub: ${message}`);
+      throw new PDFNotFoundError(message);
+    }
+
+    const pdfURL = new URL(data.url, "https://fast.wbleb.com");
+    pdfURL.protocol = "https:";
+    await Utils.attachRemotePDF(pdfURL, item);
   }
 
   private static async fetchSemanticScholarPDF(
@@ -1241,7 +1325,6 @@ export class SciHubFetcher {
       "sci-hub.red",
       "sci-hub.box",
       "sci-hub.ren",
-      "sci-hub.ee",
     ].includes(scihubUrl.hostname.toLowerCase());
   }
 

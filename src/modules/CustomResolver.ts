@@ -105,7 +105,6 @@ export function presetSciHubCustomResolvers(
     "https://sci-hub.box/",
     "https://sci-hub.st/",
     "https://sci-hub.ren/",
-    "https://sci-hub.ee/",
     "https://sci-hub.world/",
   ];
   return scihubURLs.flatMap((url) => sciHubCustomResolvers(url, automatic));
