@@ -83,6 +83,11 @@ type FetchPlatform =
   | {
       id: string;
       label: string;
+      type: "google-scholar";
+    }
+  | {
+      id: string;
+      label: string;
       type: "unpaywall";
     }
   | {
@@ -304,6 +309,16 @@ export class SciHubFetcher {
           } catch (error) {
             platformErrors.push(error);
           }
+        } else if (platform.type === "google-scholar") {
+          for (const doi of dois) {
+            try {
+              await this.fetchGoogleScholarPDF(doi, item);
+              success = true;
+              break;
+            } catch (error) {
+              platformErrors.push(error);
+            }
+          }
         } else if (platform.type === "unpaywall") {
           for (const doi of dois) {
             try {
@@ -507,6 +522,16 @@ export class SciHubFetcher {
     }
 
     if (dois.length > 0) {
+      platforms.push({
+        id: "scholar.google.com",
+        label: "Google Scholar",
+        value: {
+          id: "scholar.google.com",
+          label: "Google Scholar",
+          type: "google-scholar",
+        },
+      });
+
       platforms.push({
         id: "unpaywall.org",
         label: "Unpaywall",
@@ -997,6 +1022,169 @@ export class SciHubFetcher {
         )}`,
       );
     }
+  }
+
+  private static async fetchGoogleScholarPDF(doi: string, item: Zotero.Item) {
+    const normalizedDOI = this.normalizeDOI(doi);
+    const xhr = await this.fetchGoogleScholarDocument(normalizedDOI);
+    const candidates = this.googleScholarPDFCandidates(xhr.responseXML);
+
+    if (candidates.length <= 0) {
+      throw new PDFNotFoundError(
+        `Google Scholar PDF not found for DOI ${normalizedDOI}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    const attachErrors: unknown[] = [];
+    for (const candidate of candidates) {
+      try {
+        ztoolkit.log(
+          `google-scholar: importing ${candidate.source} PDF ${candidate.url.href}`,
+        );
+        await Utils.attachRemotePDF(candidate.url, item);
+        return;
+      } catch (error) {
+        attachErrors.push(
+          new Error(
+            `Google Scholar candidate failed (${candidate.source}, ${candidate.url.href}): ${this.formatError(
+              error,
+            )}`,
+          ),
+        );
+      }
+    }
+
+    throw new Error(
+      `Google Scholar PDF candidates failed for DOI ${normalizedDOI}:\n${attachErrors
+        .map((error) => this.formatError(error))
+        .join("\n\n")}`,
+    );
+  }
+
+  private static async fetchGoogleScholarDocument(doi: string) {
+    const scholarURL = new URL("https://scholar.google.com/scholar");
+    scholarURL.searchParams.set("hl", "zh-CN");
+    scholarURL.searchParams.set("as_sdt", "0,5");
+    scholarURL.searchParams.set("q", doi);
+    scholarURL.searchParams.set("btnG", "");
+
+    const xhr = await Zotero.HTTP.request("GET", scholarURL.href, {
+      responseType: "document",
+      headers: this.semanticScholarHeaders({
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        Referer: "https://scholar.google.com/",
+      }),
+      successCodes: false,
+    });
+
+    if (xhr.status === 403 || xhr.status === 429) {
+      throw new Error(
+        `Google Scholar captcha/blocked for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+    if (xhr.status !== 200) {
+      throw new Error(
+        `Google Scholar lookup failed for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+    if (this.responseLooksGoogleScholarBlock(xhr)) {
+      throw new Error(
+        `Google Scholar captcha/challenge for DOI ${doi}: ${this.responseSummary(
+          xhr,
+        )}`,
+      );
+    }
+
+    return xhr;
+  }
+
+  private static googleScholarPDFCandidates(
+    doc: Document | null | undefined,
+  ): SemanticScholarPDFCandidate[] {
+    const candidates: SemanticScholarPDFCandidate[] = [];
+    if (!doc) {
+      return candidates;
+    }
+
+    const anchors = Array.prototype.slice.call(
+      doc.querySelectorAll("a"),
+    ) as HTMLAnchorElement[];
+    for (const anchor of anchors) {
+      const rawURL = anchor.getAttribute("href");
+      if (!rawURL) {
+        continue;
+      }
+      const text = this.compactText(anchor.textContent);
+      this.addGoogleScholarPDFCandidate(candidates, rawURL, text);
+    }
+    return candidates;
+  }
+
+  private static addGoogleScholarPDFCandidate(
+    candidates: SemanticScholarPDFCandidate[],
+    rawURL: string,
+    linkText: string,
+  ) {
+    try {
+      let pdfURL = new URL(rawURL, "https://scholar.google.com");
+      if (
+        pdfURL.hostname === "scholar.google.com" &&
+        pdfURL.pathname === "/scholar_url" &&
+        pdfURL.searchParams.get("url")
+      ) {
+        pdfURL = new URL(pdfURL.searchParams.get("url") as string);
+      }
+
+      const href = pdfURL.href;
+      const looksLikePDFLinkText = /(?:^|\[|\b)PDF(?:\]|\b)|全文|下载/i.test(
+        linkText,
+      );
+      const looksLikePDFURL =
+        /\.pdf(?:[?#]|$)|\/pdf(?:\/|$)|\/pdf\/|article\/download|download\/pdf|\/content\/pdf\//i.test(
+          href,
+        );
+      if (!looksLikePDFLinkText && !looksLikePDFURL) {
+        return;
+      }
+      if (!["http:", "https:"].includes(pdfURL.protocol)) {
+        return;
+      }
+      if (/^(?:scholar\.)?google\./i.test(pdfURL.hostname)) {
+        return;
+      }
+      if (!candidates.some((candidate) => candidate.url.href === pdfURL.href)) {
+        candidates.push({
+          source: `Google Scholar ${linkText || "PDF link"}`,
+          url: pdfURL,
+        });
+      }
+    } catch (error) {
+      ztoolkit.log(
+        `google-scholar: skipped invalid PDF candidate ${rawURL}: ${this.formatError(
+          error,
+        )}`,
+      );
+    }
+  }
+
+  private static responseLooksGoogleScholarBlock(xhr: XMLHttpRequest) {
+    const text = [
+      this.responseTitle(xhr.responseXML),
+      this.responseSnippet(xhr.responseXML),
+      this.responseTextSnippet(xhr),
+    ].join(" ");
+    return /captcha|recaptcha|unusual traffic|detected unusual|sorry|not a robot|不是机器人|异常流量|流量异常|请进行人机身份验证/i.test(
+      text,
+    );
   }
 
   private static async fetchSemanticScholarPDF(
