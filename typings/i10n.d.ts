@@ -12,8 +12,9 @@ export type FluentMessageId =
   | 'popwin-pdfnotavaliable'
   | 'popwin-unknownerror'
   | 'popwin-unknownerrorclick'
+  | 'pref-about-title'
+  | 'pref-about-version'
   | 'pref-autoDownload'
   | 'pref-github'
   | 'pref-title'
-  | 'pref-version'
   | 'prefs-title';

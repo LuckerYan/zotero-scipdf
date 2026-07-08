@@ -14,9 +14,10 @@
   + .scipdf-switch-slider { background-color: #0a84ff; }
   .scipdf-switch-input:checked + .scipdf-switch-slider::before { transform:
   translateX(20px); } .scipdf-switch-input:focus-visible + .scipdf-switch-slider
-  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35); } .scipdf-footer { display:
-  flex; flex-direction: column; gap: 4px; margin-block-start: 14px; }
-  .scipdf-footer a { color: LinkText; }
+  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35); } .scipdf-about {
+  margin-block-start: 18px; } .scipdf-about-title { font-size: 18px;
+  font-weight: 600; margin-block: 0 8px; } .scipdf-about-version {
+  margin-block-end: 4px; } .scipdf-about a { color: LinkText; }
 </html:style>
 <vbox
   id="zotero-prefpane-__addonRef__"
@@ -40,14 +41,19 @@
     </html:div>
   </groupbox>
 
-  <html:div class="scipdf-footer">
+  <html:div class="scipdf-about">
+    <html:div
+      class="scipdf-about-title"
+      data-l10n-id="pref-about-title"
+    ></html:div>
+    <html:div
+      class="scipdf-about-version"
+      data-l10n-id="pref-about-version"
+      data-l10n-args='{"name":"__addonName__","version":"__buildVersion__"}'
+    ></html:div>
     <html:a
       href="https://github.com/LuckerYan/zotero-scipdf"
       data-l10n-id="pref-github"
     ></html:a>
-    <html:span
-      data-l10n-id="pref-version"
-      data-l10n-args='{"version":"__buildVersion__"}'
-    ></html:span>
   </html:div>
 </vbox>

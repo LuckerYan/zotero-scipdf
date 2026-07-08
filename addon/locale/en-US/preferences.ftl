@@ -1,4 +1,5 @@
 pref-title = PDF Download
 pref-autoDownload = Automatic PDF Download
-pref-github = GitHub: https://github.com/LuckerYan/zotero-scipdf
-pref-version = Version { $version }
+pref-about-title = About
+pref-about-version = { $name } Version { $version }
+pref-github = GitHub
