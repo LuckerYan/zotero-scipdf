@@ -13,7 +13,7 @@ export type FluentMessageId =
   | 'popwin-unknownerror'
   | 'popwin-unknownerrorclick'
   | 'pref-autoDownload'
-  | 'pref-help'
-  | 'pref-scihub-input'
+  | 'pref-github'
   | 'pref-title'
+  | 'pref-version'
   | 'prefs-title';

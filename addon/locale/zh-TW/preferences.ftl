@@ -1,5 +1,4 @@
 pref-title = PDF Download
-pref-autoDownload =
-    .label = 自動下載PDF
-pref-scihub-input = Scihub URL:
-pref-help = { $name } Build { $version }
+pref-autoDownload = 自動下載PDF
+pref-github = GitHub: https://github.com/LuckerYan/zotero-scipdf
+pref-version = 版本 { $version }

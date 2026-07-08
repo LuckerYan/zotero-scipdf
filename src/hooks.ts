@@ -1,11 +1,8 @@
-import { getString, initLocale } from "./utils/locale";
+import { initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { createZToolkit } from "./utils/ztoolkit";
 import { getPref, setPref } from "./utils/prefs";
-import {
-  sciHubCustomResolvers,
-  presetSciHubCustomResolvers,
-} from "./modules/CustomResolver";
+import { presetSciHubCustomResolvers } from "./modules/CustomResolver";
 import { CustomResolverManager } from "./modules/CustomResolverManager";
 import { Common } from "./modules/Common";
 
@@ -19,34 +16,9 @@ async function onStartup() {
   initLocale();
 
   const resolverManager = CustomResolverManager.shared;
-  const presetVersion = 4;
-  const legacyPresetHosts = new Set([
-    "sci-hub.se",
-    "sci-hub.st",
-    "sci-hub.ru",
-    "sci-hub.box",
-    "sci-hub.red",
-    "sci-hub.ren",
-    "sci-hub.ee",
-    "sci-hub.su",
-    "sci-hub.world",
-    "sci-hub.kvnp.top",
-    "www.tesble.com",
-  ]);
-  const isLegacyPresetResolver = (resolverURL: string) => {
-    try {
-      return legacyPresetHosts.has(
-        new URL(resolverURL.replace(/\{doi\}.*$/, "")).hostname,
-      );
-    } catch {
-      return false;
-    }
-  };
+  const presetVersion = 5;
   const migratePresetResolvers = (automatic = true) => {
-    const oldPresetResolvers = resolverManager.customResolvers.filter(
-      (resolver) => isLegacyPresetResolver(resolver.url),
-    );
-    resolverManager.removeCustomResolversInZotero(oldPresetResolvers);
+    resolverManager.removeAllCustomResolversInZotero();
     resolverManager.appendCustomResolversInZotero(
       presetSciHubCustomResolvers(automatic),
     );
@@ -55,25 +27,16 @@ async function onStartup() {
 
   if (!getPref("firstInstall")) {
     setPref("firstInstall", true);
-    const url = Zotero.Prefs.get("zoteroscihub.scihub_url");
-    const autoDownload = Boolean(
-      Zotero.Prefs.get("zoteroscihub.automatic_pdf_download"),
+    const legacyAutoDownload = Zotero.Prefs.get(
+      "zoteroscihub.automatic_pdf_download",
     );
-    if (url && typeof url === "string" && !isLegacyPresetResolver(url)) {
-      resolverManager.appendCustomResolversInZotero(
-        sciHubCustomResolvers(url, autoDownload),
-      );
-      setPref("presetVersion", presetVersion);
-    } else {
-      migratePresetResolvers(
-        url && typeof url === "string" ? autoDownload : true,
-      );
-    }
+    migratePresetResolvers(
+      typeof legacyAutoDownload === "boolean" ? legacyAutoDownload : true,
+    );
   } else if (getPref("presetVersion") !== presetVersion) {
-    const oldPresetResolver = resolverManager.customResolvers.find((resolver) =>
-      isLegacyPresetResolver(resolver.url),
+    migratePresetResolvers(
+      resolverManager.customResolvers[0]?.automatic !== false,
     );
-    migratePresetResolvers(oldPresetResolver?.automatic !== false);
   } else {
     resolverManager.restoreCustomResolversInZotero();
   }

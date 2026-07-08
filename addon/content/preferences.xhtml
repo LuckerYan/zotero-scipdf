@@ -1,6 +1,23 @@
 <linkset>
   <html:link rel="localization" href="__addonRef__-preferences.ftl" />
 </linkset>
+<html:style>
+  .scipdf-setting-row { align-items: center; display: flex; gap: 10px;
+  margin-block: 8px 14px; } .scipdf-switch { display: inline-block; height:
+  22px; position: relative; width: 42px; } .scipdf-switch-input { height: 0;
+  opacity: 0; width: 0; } .scipdf-switch-slider { background-color: #8a8a8a;
+  border-radius: 999px; cursor: pointer; inset: 0; position: absolute;
+  transition: background-color 120ms ease, box-shadow 120ms ease; }
+  .scipdf-switch-slider::before { background-color: #ffffff; border-radius: 50%;
+  bottom: 3px; content: ""; height: 16px; left: 3px; position: absolute;
+  transition: transform 120ms ease; width: 16px; } .scipdf-switch-input:checked
+  + .scipdf-switch-slider { background-color: #0a84ff; }
+  .scipdf-switch-input:checked + .scipdf-switch-slider::before { transform:
+  translateX(20px); } .scipdf-switch-input:focus-visible + .scipdf-switch-slider
+  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35); } .scipdf-footer { display:
+  flex; flex-direction: column; gap: 4px; margin-block-start: 14px; }
+  .scipdf-footer a { color: LinkText; }
+</html:style>
 <vbox
   id="zotero-prefpane-__addonRef__"
   onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
@@ -10,27 +27,27 @@
       <html:h2 data-l10n-id="pref-title"></html:h2>
     </label>
 
-    <checkbox
-      id="zotero-prefpane-__addonRef__-autoDownload"
-      data-l10n-id="pref-autoDownload"
-    />
-
-    <hbox>
-      <html:label
-        for="zotero-prefpane-__addonRef__-scihubUrl"
-        data-l10n-id="pref-scihub-input"
-      ></html:label>
-      <html:input
-        type="text"
-        id="zotero-prefpane-__addonRef__-scihubUrl"
-      ></html:input>
-    </hbox>
+    <html:div class="scipdf-setting-row">
+      <html:span data-l10n-id="pref-autoDownload"></html:span>
+      <html:label class="scipdf-switch">
+        <html:input
+          type="checkbox"
+          class="scipdf-switch-input"
+          id="zotero-prefpane-__addonRef__-autoDownload"
+        />
+        <html:span class="scipdf-switch-slider"></html:span>
+      </html:label>
+    </html:div>
   </groupbox>
-</vbox>
-<vbox>
-  <html:label
-    data-l10n-id="pref-help"
-    data-l10n-args='{"name": "__addonName__","version":"__buildVersion__"}'
-  >
-  </html:label>
+
+  <html:div class="scipdf-footer">
+    <html:a
+      href="https://github.com/LuckerYan/zotero-scipdf"
+      data-l10n-id="pref-github"
+    ></html:a>
+    <html:span
+      data-l10n-id="pref-version"
+      data-l10n-args='{"version":"__buildVersion__"}'
+    ></html:span>
+  </html:div>
 </vbox>
