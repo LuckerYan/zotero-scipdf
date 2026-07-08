@@ -551,12 +551,27 @@ export class SciHubFetcher {
     worker: (item: T, index: number, workerIndex: number) => Promise<void>,
   ) {
     const workerCount = Math.min(Math.max(1, concurrency), items.length);
+    let nextIndex = 0;
+    const claimedIndices = new Set<number>();
+    const claimNextIndex = () => {
+      while (nextIndex < items.length && claimedIndices.has(nextIndex)) {
+        nextIndex += 1;
+      }
+      if (nextIndex >= items.length) {
+        return undefined;
+      }
+      const itemIndex = nextIndex;
+      claimedIndices.add(itemIndex);
+      nextIndex += 1;
+      return itemIndex;
+    };
+
     const runWorker = async (workerIndex: number) => {
-      for (
-        let itemIndex = workerIndex;
-        itemIndex < items.length;
-        itemIndex += workerCount
-      ) {
+      while (true) {
+        const itemIndex = claimNextIndex();
+        if (itemIndex === undefined) {
+          return;
+        }
         await worker(items[itemIndex], itemIndex, workerIndex);
       }
     };
