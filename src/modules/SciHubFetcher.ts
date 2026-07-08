@@ -198,6 +198,11 @@ interface SemanticScholarPDFCandidate {
   source: string;
 }
 
+interface FetchQueueEntry {
+  item: Zotero.Item;
+  keys: string[];
+}
+
 export class SciHubFetcher {
   private static readonly pdfNotAvailableRegexes = [
     /Please try to search again using DOI/im,
@@ -220,6 +225,8 @@ export class SciHubFetcher {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
   private static semanticScholarUIVersionCache: string | undefined;
+
+  private static readonly activeFetchKeys = new Set<string>();
 
   private static readonly sha256InitialHash = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
@@ -272,10 +279,38 @@ export class SciHubFetcher {
       return;
     }
 
+    const queuedKeys = new Set<string>();
+    const queue: FetchQueueEntry[] = [];
+    for (const item of filtered) {
+      const keys = await this.itemFetchIdentityKeys(item);
+      const duplicateInCurrentBatch = keys.some((key) => queuedKeys.has(key));
+      if (duplicateInCurrentBatch) {
+        ztoolkit.log(
+          `sci-pdf: skipped duplicate selected item "${item.getDisplayTitle()}"`,
+        );
+        continue;
+      }
+      for (const key of keys) {
+        queuedKeys.add(key);
+      }
+      queue.push({ item, keys });
+    }
+
+    if (queue.length <= 0) {
+      return;
+    }
+
     await this.runWithConcurrency(
-      filtered,
+      queue,
       this.fetchConcurrency(),
-      async (item, _index, workerIndex) => {
+      async (entry, _index, workerIndex) => {
+        const { item, keys } = entry;
+        if (!this.claimActiveFetch(keys)) {
+          ztoolkit.log(
+            `sci-pdf: skipped already-running fetch for "${item.getDisplayTitle()}"`,
+          );
+          return;
+        }
         try {
           await this.updateItem(item, workerIndex);
         } catch (error) {
@@ -290,6 +325,8 @@ export class SciHubFetcher {
             1500,
             message,
           );
+        } finally {
+          this.releaseActiveFetch(keys);
         }
       },
     );
@@ -543,6 +580,52 @@ export class SciHubFetcher {
       return 3;
     }
     return Math.min(5, Math.max(1, Math.round(parsed)));
+  }
+
+  private static async itemFetchIdentityKeys(item: Zotero.Item) {
+    const keys = [`item:${item.id}`];
+    const doiKeys = (await Utils.extractDOIs(item))
+      .map((doi) => this.normalizeDOIIdentity(doi))
+      .filter(Boolean)
+      .map((doi) => `doi:${doi}`);
+
+    if (doiKeys.length > 0) {
+      keys.push(...doiKeys);
+    } else {
+      const titleKey = this.normalizeTitleIdentity(this.itemTitle(item));
+      if (titleKey) {
+        keys.push(`title:${titleKey}`);
+      }
+    }
+
+    return Array.from(new Set(keys));
+  }
+
+  private static normalizeDOIIdentity(doi: string) {
+    return doi
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\/(?:dx\.)?doi\.org\//, "");
+  }
+
+  private static normalizeTitleIdentity(title: string) {
+    return title.trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  private static claimActiveFetch(keys: string[]) {
+    if (keys.some((key) => this.activeFetchKeys.has(key))) {
+      return false;
+    }
+    for (const key of keys) {
+      this.activeFetchKeys.add(key);
+    }
+    return true;
+  }
+
+  private static releaseActiveFetch(keys: string[]) {
+    for (const key of keys) {
+      this.activeFetchKeys.delete(key);
+    }
   }
 
   private static async runWithConcurrency<T>(
