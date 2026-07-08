@@ -31,12 +31,12 @@ describe("startup", function () {
       "https://sci-hub.box/{doi}",
       "https://sci-hub.st/{doi}",
       "https://sci-hub.ren/{doi}",
-      "https://sci-hub.ee/{doi}",
       "https://sci-hub.world/{doi}",
     ]) {
       assert.include(urls, url);
     }
     assert.notInclude(urls, "https://sci-hub.se/{doi}");
+    assert.notInclude(urls, "https://sci-hub.ee/{doi}");
     assert.include(
       resolvers.map((resolver: { selector: string }) => resolver.selector),
       "object[type='application/pdf']",
