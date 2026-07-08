@@ -15,7 +15,10 @@ export async function registerPrefsScripts(_window: Window) {
   const autoDownloadCheckbox = _window.document.querySelector(
     `#zotero-prefpane-${config.addonRef}-autoDownload`,
   ) as HTMLInputElement | null;
-  if (!autoDownloadCheckbox) {
+  const githubLink = _window.document.querySelector(
+    `#zotero-prefpane-${config.addonRef}-github`,
+  ) as HTMLAnchorElement | null;
+  if (!autoDownloadCheckbox || !githubLink) {
     ztoolkit.log("Sci-PDF preference controls were not found");
     return;
   }
@@ -33,5 +36,10 @@ export async function registerPrefsScripts(_window: Window) {
 
   autoDownloadCheckbox.addEventListener("change", () => {
     updateAutoDownload();
+  });
+
+  githubLink.addEventListener("click", (event) => {
+    event.preventDefault();
+    Zotero.launchURL(githubLink.href);
   });
 }
