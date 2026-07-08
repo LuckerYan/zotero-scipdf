@@ -1,4 +1,5 @@
 import { getString } from "../utils/locale";
+import { getPref } from "../utils/prefs";
 import { Utils } from "../utils/utils";
 import { CustomResolverManager } from "./CustomResolverManager";
 import { DDoSGuardSolver } from "./DDoSGuardSolver";
@@ -262,244 +263,295 @@ export class SciHubFetcher {
       return;
     }
 
-    for (const item of filtered) {
-      const dois = await Utils.extractDOIs(item);
-      const title = this.itemTitle(item);
-      if (dois.length <= 0 && !title) {
-        Utils.showPopWin(
-          getString("popwin-doimissing"),
-          item.getDisplayTitle(),
-          "warning",
-        );
-        ztoolkit.log(`DOI/Title Not Found for "${item.getField("title")}"`);
-        continue;
-      }
+    await this.runWithConcurrency(
+      filtered,
+      this.fetchConcurrency(),
+      async (item) => {
+        try {
+          await this.updateItem(item);
+        } catch (error) {
+          const message = this.formatFetchFailure(error);
+          ztoolkit.log(
+            `sci-pdf: unexpected batch fetch failure for "${item.getDisplayTitle()}":\n${message}`,
+          );
+          Utils.showPopWin(
+            getString("popwin-unknownerror"),
+            message,
+            "fail",
+            1500,
+            message,
+          );
+        }
+      },
+    );
+  }
 
-      let success = false;
-      const notFoundErrors: PDFNotFoundError[] = [];
-      const errors: unknown[] = [];
-      const platforms = PlatformWeightManager.sort(
-        this.buildFetchPlatforms(dois, title),
+  private static async updateItem(item: Zotero.Item) {
+    const dois = await Utils.extractDOIs(item);
+    const title = this.itemTitle(item);
+    if (dois.length <= 0 && !title) {
+      Utils.showPopWin(
+        getString("popwin-doimissing"),
+        item.getDisplayTitle(),
+        "warning",
       );
-      const attemptsForPlatform = (platform: FetchPlatform) =>
-        platform.type === "semantic-scholar" ? 1 : Math.max(dois.length, 1);
-      const totalAttempts = Math.max(
-        platforms.reduce(
-          (count, candidate) => count + attemptsForPlatform(candidate.value),
-          0,
-        ),
-        1,
+      ztoolkit.log(`DOI/Title Not Found for "${item.getField("title")}"`);
+      return;
+    }
+
+    let success = false;
+    const notFoundErrors: PDFNotFoundError[] = [];
+    const errors: unknown[] = [];
+    const platforms = PlatformWeightManager.sort(
+      this.buildFetchPlatforms(dois, title),
+    );
+    const attemptsForPlatform = (platform: FetchPlatform) =>
+      platform.type === "semantic-scholar" ? 1 : Math.max(dois.length, 1);
+    const totalAttempts = Math.max(
+      platforms.reduce(
+        (count, candidate) => count + attemptsForPlatform(candidate.value),
+        0,
+      ),
+      1,
+    );
+    let completedAttempts = 0;
+    const progressPercent = (completed = completedAttempts) =>
+      Math.min(
+        96,
+        Math.max(6, Math.round(6 + (completed / totalAttempts) * 88)),
       );
-      let completedAttempts = 0;
-      const progressPercent = (completed = completedAttempts) =>
-        Math.min(
-          96,
-          Math.max(6, Math.round(6 + (completed / totalAttempts) * 88)),
-        );
-      const platformLabel = (platform: FetchPlatform) =>
-        platform.label || platform.id;
-      const progressWin = Utils.showProgressPopWin(
-        getString("popwin-fetching"),
-        "准备检索文献 PDF 来源",
+    const platformLabel = (platform: FetchPlatform) =>
+      platform.label || platform.id;
+    const itemDisplayTitle = item.getDisplayTitle();
+    const progressWin = Utils.showProgressPopWin(
+      getString("popwin-fetching"),
+      "准备检索文献 PDF 来源",
+      {
+        progress: progressPercent(0),
+        itemTitle: itemDisplayTitle,
+      },
+    );
+    const markAttemptStart = (platform: FetchPlatform, doi?: string) => {
+      const label = platformLabel(platform);
+      const doiHint = doi ? ` · DOI ${this.shortDOI(doi)}` : "";
+      progressWin.update(
+        `正在检索 ${label}${doiHint}`,
+        progressPercent(completedAttempts),
+      );
+    };
+    const markAttemptDone = (
+      platform: FetchPlatform,
+      result: "miss" | "success",
+    ) => {
+      completedAttempts = Math.min(completedAttempts + 1, totalAttempts);
+      const label = platformLabel(platform);
+      progressWin.update(
+        result === "success"
+          ? `${label} 已找到并保存 PDF`
+          : `${label} 未命中，继续尝试下一个来源`,
+        result === "success" ? 100 : progressPercent(completedAttempts),
         {
-          progress: progressPercent(0),
+          type: result === "success" ? "success" : "default",
         },
       );
-      const markAttemptStart = (platform: FetchPlatform, doi?: string) => {
-        const label = platformLabel(platform);
-        const doiHint = doi ? ` · DOI ${this.shortDOI(doi)}` : "";
-        progressWin.update(
-          `正在检索 ${label}${doiHint}`,
-          progressPercent(completedAttempts),
-        );
-      };
-      const markAttemptDone = (
-        platform: FetchPlatform,
-        result: "miss" | "success",
-      ) => {
-        completedAttempts = Math.min(completedAttempts + 1, totalAttempts);
-        const label = platformLabel(platform);
-        progressWin.update(
-          result === "success"
-            ? `${label} 已找到并保存 PDF`
-            : `${label} 未命中，继续尝试下一个来源`,
-          result === "success" ? 100 : progressPercent(completedAttempts),
-          {
-            type: result === "success" ? "success" : "default",
-          },
-        );
-      };
+    };
 
-      ztoolkit.log(
-        `sci-pdf platform order: ${platforms
-          .map(
-            (platform) =>
-              `${platform.label ?? platform.id}(score=${platform.stats.score.toFixed(
-                2,
-              )}, rank=${platform.rank.toFixed(2)})`,
-          )
-          .join(" -> ")}`,
-      );
+    ztoolkit.log(
+      `sci-pdf platform order: ${platforms
+        .map(
+          (platform) =>
+            `${platform.label ?? platform.id}(score=${platform.stats.score.toFixed(
+              2,
+            )}, rank=${platform.rank.toFixed(2)})`,
+        )
+        .join(" -> ")}`,
+    );
 
-      for (const candidate of platforms) {
-        const platform = candidate.value;
-        const platformErrors: unknown[] = [];
+    for (const candidate of platforms) {
+      const platform = candidate.value;
+      const platformErrors: unknown[] = [];
 
-        if (platform.type === "semantic-scholar") {
-          markAttemptStart(platform);
+      if (platform.type === "semantic-scholar") {
+        markAttemptStart(platform);
+        try {
+          await this.fetchSemanticScholarPDF(undefined, item);
+          markAttemptDone(platform, "success");
+          success = true;
+        } catch (error) {
+          platformErrors.push(error);
+          markAttemptDone(platform, "miss");
+        }
+      } else if (platform.type === "google-scholar") {
+        for (const doi of dois) {
+          markAttemptStart(platform, doi);
           try {
-            await this.fetchSemanticScholarPDF(undefined, item);
+            await this.fetchGoogleScholarPDF(doi, item);
             markAttemptDone(platform, "success");
             success = true;
+            break;
           } catch (error) {
             platformErrors.push(error);
             markAttemptDone(platform, "miss");
           }
-        } else if (platform.type === "google-scholar") {
-          for (const doi of dois) {
-            markAttemptStart(platform, doi);
-            try {
-              await this.fetchGoogleScholarPDF(doi, item);
-              markAttemptDone(platform, "success");
-              success = true;
-              break;
-            } catch (error) {
-              platformErrors.push(error);
-              markAttemptDone(platform, "miss");
-            }
-          }
-        } else if (platform.type === "unpaywall") {
-          for (const doi of dois) {
-            markAttemptStart(platform, doi);
-            try {
-              await this.fetchUnpaywallPDF(doi, item);
-              markAttemptDone(platform, "success");
-              success = true;
-              break;
-            } catch (error) {
-              platformErrors.push(error);
-              markAttemptDone(platform, "miss");
-            }
-          }
-        } else if (platform.type === "openalex") {
-          for (const doi of dois) {
-            markAttemptStart(platform, doi);
-            try {
-              await this.fetchOpenAlexPDF(doi, item);
-              markAttemptDone(platform, "success");
-              success = true;
-              break;
-            } catch (error) {
-              platformErrors.push(error);
-              markAttemptDone(platform, "miss");
-            }
-          }
-        } else {
-          for (const doi of dois) {
-            markAttemptStart(platform, doi);
-            let scihubUrl: URL;
-            try {
-              scihubUrl = new URL(doi, platform.baseURL);
-            } catch (error) {
-              platformErrors.push(
-                new Error(
-                  `Invalid Sci-Hub platform URL ${platform.baseURL}: ${this.formatError(
-                    error,
-                  )}`,
-                ),
-              );
-              markAttemptDone(platform, "miss");
-              continue;
-            }
-
-            try {
-              await this.fetchPDF(scihubUrl, item);
-              markAttemptDone(platform, "success");
-              success = true;
-              break;
-            } catch (error) {
-              platformErrors.push(error);
-              markAttemptDone(platform, "miss");
-            }
+        }
+      } else if (platform.type === "unpaywall") {
+        for (const doi of dois) {
+          markAttemptStart(platform, doi);
+          try {
+            await this.fetchUnpaywallPDF(doi, item);
+            markAttemptDone(platform, "success");
+            success = true;
+            break;
+          } catch (error) {
+            platformErrors.push(error);
+            markAttemptDone(platform, "miss");
           }
         }
-
-        if (success) {
-          PlatformWeightManager.record(platform.id, "success");
-          break;
+      } else if (platform.type === "openalex") {
+        for (const doi of dois) {
+          markAttemptStart(platform, doi);
+          try {
+            await this.fetchOpenAlexPDF(doi, item);
+            markAttemptDone(platform, "success");
+            success = true;
+            break;
+          } catch (error) {
+            platformErrors.push(error);
+            markAttemptDone(platform, "miss");
+          }
         }
+      } else {
+        for (const doi of dois) {
+          markAttemptStart(platform, doi);
+          let scihubUrl: URL;
+          try {
+            scihubUrl = new URL(doi, platform.baseURL);
+          } catch (error) {
+            platformErrors.push(
+              new Error(
+                `Invalid Sci-Hub platform URL ${platform.baseURL}: ${this.formatError(
+                  error,
+                )}`,
+              ),
+            );
+            markAttemptDone(platform, "miss");
+            continue;
+          }
 
-        if (platformErrors.length > 0) {
-          const primaryError =
-            platformErrors.find((error) => !this.asPDFNotFoundError(error)) ??
-            platformErrors[0];
-          PlatformWeightManager.record(
-            platform.id,
-            this.classifyPlatformFailure(primaryError),
-          );
-          for (const error of platformErrors) {
-            const notFoundError = this.asPDFNotFoundError(error);
-            if (notFoundError) {
-              notFoundErrors.push(notFoundError);
-            } else {
-              errors.push(error);
-            }
+          try {
+            await this.fetchPDF(scihubUrl, item);
+            markAttemptDone(platform, "success");
+            success = true;
+            break;
+          } catch (error) {
+            platformErrors.push(error);
+            markAttemptDone(platform, "miss");
           }
         }
       }
-
-      progressWin.close();
-
-      const onlyNonDecisiveErrors =
-        errors.length > 0 &&
-        errors.every((error) => this.isNonDecisivePlatformFailure(error));
 
       if (success) {
-        Utils.showPopWin(
-          getString("popwin-fetchsuccess"),
-          item.getDisplayTitle(),
-          "success",
-          1500,
+        PlatformWeightManager.record(platform.id, "success");
+        break;
+      }
+
+      if (platformErrors.length > 0) {
+        const primaryError =
+          platformErrors.find((error) => !this.asPDFNotFoundError(error)) ??
+          platformErrors[0];
+        PlatformWeightManager.record(
+          platform.id,
+          this.classifyPlatformFailure(primaryError),
         );
-      } else if (
-        notFoundErrors.length > 0 &&
-        (errors.length <= 0 || onlyNonDecisiveErrors)
-      ) {
-        ztoolkit.log(
-          `sci-pdf: PDF not found for "${item.getDisplayTitle()}": ${notFoundErrors
-            .map((error) => error.message)
-            .join("\n")}`,
-        );
-        if (onlyNonDecisiveErrors) {
-          ztoolkit.log(
-            `sci-pdf: suppressing non-decisive platform failure(s) after PDF-not-found decision for "${item.getDisplayTitle()}":\n${errors
-              .map((error) => this.formatFetchFailure(error))
-              .join("\n\n")}`,
-          );
+        for (const error of platformErrors) {
+          const notFoundError = this.asPDFNotFoundError(error);
+          if (notFoundError) {
+            notFoundErrors.push(notFoundError);
+          } else {
+            errors.push(error);
+          }
         }
-        Utils.showPopWin(
-          getString("popwin-pdfnotavaliable"),
-          item.getDisplayTitle(),
-          "warning",
-          1500,
-        );
-      } else {
-        const failures = [...errors, ...notFoundErrors];
-        const message = failures.length
-          ? failures.map((error) => this.formatFetchFailure(error)).join("\n\n")
-          : `No PDF resolver succeeded for "${item.getDisplayTitle()}"`;
-        ztoolkit.log(
-          `sci-pdf: failed to fetch PDF for "${item.getDisplayTitle()}":\n${message}`,
-        );
-        Utils.showPopWin(
-          getString("popwin-unknownerror"),
-          message,
-          "fail",
-          1500,
-          message,
-        );
       }
     }
+
+    progressWin.close();
+
+    const onlyNonDecisiveErrors =
+      errors.length > 0 &&
+      errors.every((error) => this.isNonDecisivePlatformFailure(error));
+
+    if (success) {
+      Utils.showPopWin(
+        getString("popwin-fetchsuccess"),
+        itemDisplayTitle,
+        "success",
+        1500,
+      );
+    } else if (
+      notFoundErrors.length > 0 &&
+      (errors.length <= 0 || onlyNonDecisiveErrors)
+    ) {
+      ztoolkit.log(
+        `sci-pdf: PDF not found for "${itemDisplayTitle}": ${notFoundErrors
+          .map((error) => error.message)
+          .join("\n")}`,
+      );
+      if (onlyNonDecisiveErrors) {
+        ztoolkit.log(
+          `sci-pdf: suppressing non-decisive platform failure(s) after PDF-not-found decision for "${itemDisplayTitle}":\n${errors
+            .map((error) => this.formatFetchFailure(error))
+            .join("\n\n")}`,
+        );
+      }
+      Utils.showPopWin(
+        getString("popwin-pdfnotavaliable"),
+        itemDisplayTitle,
+        "warning",
+        1500,
+      );
+    } else {
+      const failures = [...errors, ...notFoundErrors];
+      const message = failures.length
+        ? failures.map((error) => this.formatFetchFailure(error)).join("\n\n")
+        : `No PDF resolver succeeded for "${itemDisplayTitle}"`;
+      ztoolkit.log(
+        `sci-pdf: failed to fetch PDF for "${itemDisplayTitle}":\n${message}`,
+      );
+      Utils.showPopWin(
+        getString("popwin-unknownerror"),
+        message,
+        "fail",
+        1500,
+        message,
+      );
+    }
+  }
+
+  private static fetchConcurrency() {
+    const parsed = Number(getPref("fetchConcurrency"));
+    if (!Number.isFinite(parsed)) {
+      return 3;
+    }
+    return Math.min(5, Math.max(1, Math.round(parsed)));
+  }
+
+  private static async runWithConcurrency<T>(
+    items: T[],
+    concurrency: number,
+    worker: (item: T, index: number) => Promise<void>,
+  ) {
+    let nextIndex = 0;
+    const workerCount = Math.min(Math.max(1, concurrency), items.length);
+    const runWorker = async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => await runWorker()),
+    );
   }
 
   private static async buildSciHubURLs(item: Zotero.Item): Promise<URL[]> {

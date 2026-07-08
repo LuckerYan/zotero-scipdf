@@ -8,6 +8,7 @@ declare namespace _ZoteroTypes {
   interface Prefs {
     PluginPrefsMap: {
       "firstInstall": boolean;
+      "fetchConcurrency": number;
       "platformStats": string;
       "presetVersion": number;
     };

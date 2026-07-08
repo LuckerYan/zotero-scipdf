@@ -14,13 +14,15 @@
   + .scipdf-switch-slider { background-color: #0a84ff; }
   .scipdf-switch-input:checked + .scipdf-switch-slider::before { transform:
   translateX(20px); } .scipdf-switch-input:focus-visible + .scipdf-switch-slider
-  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35); } .scipdf-about {
-  margin-block-start: 18px; } .scipdf-about-title { font-size: 18px;
-  font-weight: 600; margin-block: 0 8px; } .scipdf-about-version {
+  { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.35); } .scipdf-number-input {
+  box-sizing: border-box; max-width: 72px; min-height: 26px; padding: 2px 8px; }
+  .scipdf-about { margin-block-start: 18px; } .scipdf-about-title { font-size:
+  18px; font-weight: 600; margin-block: 0 8px; } .scipdf-about-version {
   margin-block-end: 4px; } .scipdf-about a { color: LinkText; }
 </html:style>
 <vbox
   id="zotero-prefpane-__addonRef__"
+  flex="1"
   onload="Zotero.__addonInstance__.hooks.onPrefsEvent('load', { window })"
 >
   <groupbox>
@@ -39,7 +41,24 @@
         <html:span class="scipdf-switch-slider"></html:span>
       </html:label>
     </html:div>
+
+    <html:div class="scipdf-setting-row">
+      <html:label
+        for="zotero-prefpane-__addonRef__-fetchConcurrency"
+        data-l10n-id="pref-fetchConcurrency"
+      ></html:label>
+      <html:input
+        type="number"
+        min="1"
+        max="5"
+        step="1"
+        class="scipdf-number-input"
+        id="zotero-prefpane-__addonRef__-fetchConcurrency"
+      ></html:input>
+    </html:div>
   </groupbox>
+
+  <spacer flex="1" />
 
   <html:div class="scipdf-about">
     <html:div

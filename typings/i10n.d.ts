@@ -15,6 +15,7 @@ export type FluentMessageId =
   | 'pref-about-title'
   | 'pref-about-version'
   | 'pref-autoDownload'
+  | 'pref-fetchConcurrency'
   | 'pref-github'
   | 'pref-title'
   | 'prefs-title';

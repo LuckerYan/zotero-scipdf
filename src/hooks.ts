@@ -41,6 +41,16 @@ async function onStartup() {
     resolverManager.restoreCustomResolversInZotero();
   }
 
+  const fetchConcurrency = Number(getPref("fetchConcurrency"));
+  if (!Number.isFinite(fetchConcurrency)) {
+    setPref("fetchConcurrency", 3);
+  } else {
+    setPref(
+      "fetchConcurrency",
+      Math.min(5, Math.max(1, Math.round(fetchConcurrency))),
+    );
+  }
+
   await Common.registerPrefs();
 
   await Promise.all(

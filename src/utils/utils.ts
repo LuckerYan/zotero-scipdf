@@ -6,6 +6,7 @@ interface ProgressPopupOptions {
   type?: PopWinType;
   closeTime?: number;
   progress?: number;
+  itemTitle?: string;
 }
 
 interface ProgressUpdateOptions {
@@ -118,8 +119,9 @@ export class Utils {
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
     const card = this.createProgressCard(
       title,
-      this.truncatePopupMessage(message, 132),
+      message,
       currentProgress,
+      options.itemTitle,
     );
 
     const updateCard = (status: string, progress: number) => {
@@ -128,6 +130,8 @@ export class Utils {
       }
       const clampedProgress = this.clampProgress(progress);
       card.status.textContent = this.truncatePopupMessage(status, 132);
+      card.status.setAttribute("title", status);
+      card.status.setAttribute("tooltiptext", status);
       card.fill.style.width = `${clampedProgress}%`;
       card.root.setAttribute("data-progress", String(clampedProgress));
     };
@@ -137,7 +141,11 @@ export class Utils {
         clearTimeout(closeTimer);
         closeTimer = undefined;
       }
+      const doc = card?.root.ownerDocument;
       card?.root.remove();
+      if (doc) {
+        this.relayoutProgressCards(doc);
+      }
     };
 
     updateCard(message, currentProgress);
@@ -165,6 +173,7 @@ export class Utils {
     title: string,
     status: string,
     progress: number,
+    itemTitle?: string,
   ) {
     try {
       Zotero.ProgressWindowSet?.closeAll?.();
@@ -188,19 +197,25 @@ export class Utils {
         return undefined;
       }
 
-      doc.getElementById("scipdf-fetch-progress-card")?.remove();
-
       const htmlNS = "http://www.w3.org/1999/xhtml";
       const create = <K extends keyof HTMLElementTagNameMap>(tagName: K) =>
         doc.createElementNS(htmlNS, tagName) as HTMLElementTagNameMap[K];
 
       const root = create("div");
-      root.id = "scipdf-fetch-progress-card";
+      root.id = `scipdf-fetch-progress-card-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2)}`;
+      root.setAttribute("data-scipdf-fetch-progress-card", "true");
       root.setAttribute("data-progress", String(this.clampProgress(progress)));
       Object.assign(root.style, {
         position: "fixed",
         right: "16px",
-        bottom: "18px",
+        bottom: `${
+          18 +
+          doc.querySelectorAll('[data-scipdf-fetch-progress-card="true"]')
+            .length *
+            this.progressCardStackStep
+        }px`,
         zIndex: "2147483647",
         width: "336px",
         boxSizing: "border-box",
@@ -212,33 +227,64 @@ export class Utils {
         color: "#0f172a",
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
-        pointerEvents: "none",
+        pointerEvents: "auto",
         overflow: "hidden",
         transform: "translateZ(0)",
+        transition: "bottom 140ms ease-out",
+      } satisfies Partial<CSSStyleDeclaration>);
+
+      const headerRow = create("div");
+      Object.assign(headerRow.style, {
+        display: "grid",
+        gridTemplateColumns: itemTitle ? "auto minmax(0, 1fr)" : "1fr",
+        alignItems: "baseline",
+        columnGap: "8px",
+        margin: "0 0 7px 0",
+        minWidth: "0",
       } satisfies Partial<CSSStyleDeclaration>);
 
       const titleNode = create("div");
       titleNode.textContent = title;
+      titleNode.setAttribute("title", title);
+      titleNode.setAttribute("tooltiptext", title);
       Object.assign(titleNode.style, {
-        margin: "0 0 7px 0",
         color: "#0f172a",
-        fontSize: "12px",
-        lineHeight: "16px",
-        fontWeight: "800",
+        fontSize: "16px",
+        lineHeight: "21px",
+        fontWeight: "850",
         letterSpacing: ".01em",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",
       } satisfies Partial<CSSStyleDeclaration>);
 
+      const itemTitleNode = create("div");
+      if (itemTitle) {
+        itemTitleNode.textContent = itemTitle;
+        itemTitleNode.setAttribute("title", itemTitle);
+        itemTitleNode.setAttribute("tooltiptext", itemTitle);
+        Object.assign(itemTitleNode.style, {
+          color: "#334155",
+          fontSize: "12px",
+          lineHeight: "18px",
+          fontWeight: "650",
+          minWidth: "0",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        } satisfies Partial<CSSStyleDeclaration>);
+      }
+
       const statusNode = create("div");
       statusNode.textContent = this.truncatePopupMessage(status, 132);
+      statusNode.setAttribute("title", status);
+      statusNode.setAttribute("tooltiptext", status);
       Object.assign(statusNode.style, {
-        margin: "0 0 13px 0",
-        color: "#0f172a",
-        fontSize: "14px",
-        lineHeight: "20px",
-        fontWeight: "750",
+        margin: "0 0 12px 0",
+        color: "#475569",
+        fontSize: "12px",
+        lineHeight: "17px",
+        fontWeight: "650",
         whiteSpace: "nowrap",
         overflow: "hidden",
         textOverflow: "ellipsis",
@@ -289,7 +335,11 @@ export class Utils {
       track.appendChild(fill);
       progressRow.appendChild(progressLabel);
       progressRow.appendChild(track);
-      root.appendChild(titleNode);
+      headerRow.appendChild(titleNode);
+      if (itemTitle) {
+        headerRow.appendChild(itemTitleNode);
+      }
+      root.appendChild(headerRow);
       root.appendChild(statusNode);
       root.appendChild(progressRow);
       host.appendChild(root);
@@ -307,6 +357,17 @@ export class Utils {
       );
       return undefined;
     }
+  }
+
+  private static readonly progressCardStackStep = 118;
+
+  private static relayoutProgressCards(doc: Document) {
+    const cards = Array.from(
+      doc.querySelectorAll('[data-scipdf-fetch-progress-card="true"]'),
+    ) as HTMLElement[];
+    cards.forEach((card, index) => {
+      card.style.bottom = `${18 + index * this.progressCardStackStep}px`;
+    });
   }
 
   private static createNotificationCard(
