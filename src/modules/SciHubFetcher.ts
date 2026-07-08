@@ -245,17 +245,26 @@ export class SciHubFetcher {
     skipIfExistPDF: boolean = true,
   ) {
     const filtered: Zotero.Item[] = [];
+    const filteredItemIDs = new Set<number>();
+    const appendFiltered = (item: Zotero.Item) => {
+      if (filteredItemIDs.has(item.id)) {
+        return;
+      }
+      filteredItemIDs.add(item.id);
+      filtered.push(item);
+    };
+
     for (const item of items) {
       if (!item.isRegularItem()) {
         continue;
       }
       if (!skipIfExistPDF) {
-        filtered.push(item);
+        appendFiltered(item);
         continue;
       }
       const attachment = await item.getBestAttachment();
       if (!attachment || !attachment.isPDFAttachment()) {
-        filtered.push(item);
+        appendFiltered(item);
       }
     }
 
@@ -266,9 +275,9 @@ export class SciHubFetcher {
     await this.runWithConcurrency(
       filtered,
       this.fetchConcurrency(),
-      async (item) => {
+      async (item, _index, workerIndex) => {
         try {
-          await this.updateItem(item);
+          await this.updateItem(item, workerIndex);
         } catch (error) {
           const message = this.formatFetchFailure(error);
           ztoolkit.log(
@@ -286,7 +295,7 @@ export class SciHubFetcher {
     );
   }
 
-  private static async updateItem(item: Zotero.Item) {
+  private static async updateItem(item: Zotero.Item, workerIndex?: number) {
     const dois = await Utils.extractDOIs(item);
     const title = this.itemTitle(item);
     if (dois.length <= 0 && !title) {
@@ -329,6 +338,7 @@ export class SciHubFetcher {
       {
         progress: progressPercent(0),
         itemTitle: itemDisplayTitle,
+        slotIndex: workerIndex,
       },
     );
     const markAttemptStart = (platform: FetchPlatform, doi?: string) => {
@@ -538,19 +548,23 @@ export class SciHubFetcher {
   private static async runWithConcurrency<T>(
     items: T[],
     concurrency: number,
-    worker: (item: T, index: number) => Promise<void>,
+    worker: (item: T, index: number, workerIndex: number) => Promise<void>,
   ) {
-    let nextIndex = 0;
     const workerCount = Math.min(Math.max(1, concurrency), items.length);
-    const runWorker = async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        await worker(items[index], index);
+    const runWorker = async (workerIndex: number) => {
+      for (
+        let itemIndex = workerIndex;
+        itemIndex < items.length;
+        itemIndex += workerCount
+      ) {
+        await worker(items[itemIndex], itemIndex, workerIndex);
       }
     };
     await Promise.all(
-      Array.from({ length: workerCount }, async () => await runWorker()),
+      Array.from(
+        { length: workerCount },
+        async (_unused, workerIndex) => await runWorker(workerIndex),
+      ),
     );
   }
 

@@ -7,6 +7,7 @@ interface ProgressPopupOptions {
   closeTime?: number;
   progress?: number;
   itemTitle?: string;
+  slotIndex?: number;
 }
 
 interface ProgressUpdateOptions {
@@ -122,6 +123,7 @@ export class Utils {
       message,
       currentProgress,
       options.itemTitle,
+      options.slotIndex,
     );
 
     const updateCard = (status: string, progress: number) => {
@@ -142,8 +144,11 @@ export class Utils {
         closeTimer = undefined;
       }
       const doc = card?.root.ownerDocument;
+      const fixedSlot = card?.root.hasAttribute(
+        "data-scipdf-fetch-progress-slot",
+      );
       card?.root.remove();
-      if (doc) {
+      if (doc && !fixedSlot) {
         this.relayoutProgressCards(doc);
       }
     };
@@ -174,6 +179,7 @@ export class Utils {
     status: string,
     progress: number,
     itemTitle?: string,
+    slotIndex?: number,
   ) {
     try {
       Zotero.ProgressWindowSet?.closeAll?.();
@@ -200,20 +206,39 @@ export class Utils {
       const htmlNS = "http://www.w3.org/1999/xhtml";
       const create = <K extends keyof HTMLElementTagNameMap>(tagName: K) =>
         doc.createElementNS(htmlNS, tagName) as HTMLElementTagNameMap[K];
+      const fixedSlotIndex =
+        typeof slotIndex === "number" && Number.isInteger(slotIndex)
+          ? Math.max(0, slotIndex)
+          : undefined;
+
+      if (fixedSlotIndex !== undefined) {
+        doc
+          .querySelector(
+            `[data-scipdf-fetch-progress-slot="${fixedSlotIndex}"]`,
+          )
+          ?.remove();
+      }
 
       const root = create("div");
       root.id = `scipdf-fetch-progress-card-${Date.now()}-${Math.random()
         .toString(36)
         .slice(2)}`;
       root.setAttribute("data-scipdf-fetch-progress-card", "true");
+      if (fixedSlotIndex !== undefined) {
+        root.setAttribute(
+          "data-scipdf-fetch-progress-slot",
+          String(fixedSlotIndex),
+        );
+      }
       root.setAttribute("data-progress", String(this.clampProgress(progress)));
       Object.assign(root.style, {
         position: "fixed",
         right: "16px",
         bottom: `${
           18 +
-          doc.querySelectorAll('[data-scipdf-fetch-progress-card="true"]')
-            .length *
+          (fixedSlotIndex ??
+            doc.querySelectorAll('[data-scipdf-fetch-progress-card="true"]')
+              .length) *
             this.progressCardStackStep
         }px`,
         zIndex: "2147483647",
