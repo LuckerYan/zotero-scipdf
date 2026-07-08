@@ -14,5 +14,6 @@ tsconfig.tsbuildinfo
 .env
 .scaffold
 build
+dist
 logs
 /.serena
