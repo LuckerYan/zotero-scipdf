@@ -1,37 +1,47 @@
-# SciPDF For Zotero
+# Sci-PDF For Zotero
 
-[![zotero target version](https://img.shields.io/badge/Zotero-7+-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
+[![Zotero target version](https://img.shields.io/badge/Zotero-7%2B-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 [English](../README.md) | 简体中文
 
 ## 介绍
 
-SciPDF 是一个用于 Zotero 7 / Zotero 8 / Zotero 9 的 PDF 获取插件。项目最初是
-Sci-Hub resolver 插件，现在已经扩展为多平台 PDF 获取器，支持 DOI 检索、标题检索、开放获取
-PDF 发现、Scholar 结果页 PDF 提取，以及多个 Sci-Hub 镜像。
+Sci-PDF 是一个用于 Zotero 7 / 8 / 9 的 PDF 获取插件。它可以根据 Zotero
+条目中的 DOI 或标题，自动尝试从多个来源检索 PDF，并将找到的 PDF 附加到对应的
+Zotero 条目下面。
 
-插件会结合 Zotero 内置的
-[自定义 PDF resolvers](https://www.zotero.org/support/kb/custom_pdf_resolvers)
-能力，同时也在右键获取 PDF 流程中实现自己的多平台轮询逻辑。它会区分“确实没有 PDF”和“平台错误 / 验证码 / 网络问题”，并维护动态平台权重：成功率高的平台会被优先尝试，失败多的平台会降权，但不会被完全禁用。
+当前维护仓库：
 
-> 相关资料：
->
-> - [Zotero 自定义 PDF resolvers](https://www.zotero.org/support/kb/custom_pdf_resolvers)
-> - [Zotero 附件解析代码](https://github.com/zotero/zotero/blob/5536f8d2bd08ddac9074b9df05b7d205273835e7/chrome/content/zotero/xpcom/attachments.js#L1350)
-> - [Zotero 中文社区相关信息](https://zotero-chinese.com/user-guide/plugins/Zotero-scihub.html#操作步骤)
+```text
+https://github.com/LuckerYan/zotero-scipdf
+```
 
-## 已支持的平台
+本项目基于原开源项目
+[syt2/zotero-scipdf](https://github.com/syt2/zotero-scipdf) 修改和完善，感谢原作者的开源贡献。
 
-| 平台             | 检索依据                   | PDF 判定规则                                                                                  | 说明                                                                        |
-| ---------------- | -------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Semantic Scholar | 优先标题，DOI 作为辅助证据 | Graph/open-access PDF 字段、网页端 PDF visibility 字段、搜索结果 PDF 链接、ArXiv ID           | 条目有标题时参与。                                                          |
-| Google Scholar   | 仅 DOI                     | 从 Scholar 搜索结果提取可见 `[PDF]` 链接或明显 PDF URL                                        | CAPTCHA / unusual traffic 会被识别为平台错误，不会误判为未找到。            |
-| Unpaywall        | 仅 DOI                     | `best_oa_location.url_for_pdf`、`first_oa_location.url_for_pdf`、`oa_locations[].url_for_pdf` | `url` / `url_for_landing_page` 这类网页地址不会被当作 PDF。                 |
-| OpenAlex         | 仅 DOI                     | `primary_location.pdf_url`、`best_oa_location.pdf_url`、`locations[].pdf_url`                 | 使用 DOI 直查接口 `/works/doi:{doi}`。`open_access.oa_url` 不会被当作 PDF。 |
-| Sci-Hub 镜像     | 仅 DOI                     | HTML 中的 PDF embed / iframe / link，或镜像专用 API / 任务接口                                | 已加入 ALTCHA PoW 和部分 DDoS-Guard 纯 HTTP/WebSocket 解算。                |
+## 主要功能
 
-当前内置的 Sci-Hub 风格平台：
+- 插件设置页提供自动下载 PDF 开关。
+- 支持右键对单篇或多篇 Zotero 条目执行 **获取 PDF**。
+- 支持批量获取 PDF，并可配置条目级检索并发数。
+- 右下角使用多个 worker 进度弹窗显示当前检索状态。
+- 每个 worker 的最终结果会显示在自己的弹窗位置：下载成功、未找到或错误。
+- 根据 Zotero item id、DOI、标题去重，避免多个 worker 重复检索同一篇文献。
+- 支持多个 PDF 来源，包括开放获取元数据服务、学术搜索结果页和内置 Sci-Hub 风格镜像。
+- 支持 GitHub Actions 在线打包 Release XPI。
+
+## 已支持来源
+
+| 来源             | 检索依据        | 说明                                                                      |
+| ---------------- | --------------- | ------------------------------------------------------------------------- |
+| Semantic Scholar | 标题 / DOI 辅助 | 使用 Graph/open-access 字段、网页 PDF visibility、搜索链接和 ArXiv 信息。 |
+| Google Scholar   | DOI             | 提取可见 `[PDF]` 链接或明显 PDF URL；验证码页面会作为平台错误处理。       |
+| Unpaywall        | DOI             | 只使用明确的 `url_for_pdf` 字段，不把 landing page 当成 PDF。             |
+| OpenAlex         | DOI             | 使用 DOI 查询结果中的明确 `*.pdf_url` 字段。                              |
+| Sci-Hub 风格镜像 | DOI             | 使用内置镜像列表，以及部分镜像的专用解析/API 逻辑。                       |
+
+当前内置 Sci-Hub 风格镜像：
 
 ```text
 https://sci-hub.kvnp.top/
@@ -45,54 +55,51 @@ https://sci-hub.ren/
 https://sci-hub.world/
 ```
 
-特殊处理：
+当前包含一些特殊处理：
 
-- `sci-hub.world` 不再直接解析 Next.js 页面，而是走 `fast.wbleb.com` 的 API。
-- `sci-hub.ee` 已从默认平台移除，因为它实际转交给 `www.tesble.com`；旧 preset 会在迁移时清理。
-- `sci-hub.ru` / `sci-hub.st` 可使用内置纯 HTTP/WebSocket 逻辑通过已观察到的 DDoS-Guard 流程。
-- `sci-hub.su` 等 ALTCHA 页面可使用内置 ALTCHA proof-of-work 解算。
+- `sci-hub.world` API / 任务流程。
+- 兼容页面的 DDoS-Guard 处理。
+- 兼容页面的 ALTCHA proof-of-work 处理。
+- 安装或迁移时清理旧 preset resolver。
 
-## 平台顺序和动态权重
+## 插件设置
 
-插件会按条目内容构造候选平台：
+在 Zotero 设置中打开 Sci-PDF 面板。
 
-- 条目有标题：可使用 Semantic Scholar。
-- 条目有 DOI：可使用 Google Scholar、Unpaywall、OpenAlex、Sci-Hub 镜像。
-- 条目没有 DOI：不会使用 DOI-only 平台。
+当前设置项：
 
-最终顺序由 `PlatformWeightManager` 动态排序：
+- **自动下载 PDF**：启用或关闭 Zotero 中的自动 PDF resolver。
+- **检索并发数**：控制同时检索多少个 Zotero 条目。范围为 `1`-`5`，默认值为 `3`。
 
-- 成功的平台会加权；
-- 失败、未找到、错误的平台会按结果降权；
-- 即使某个平台最近失败很多，也仍然有机会在其它文献中被尝试，不会被永久排除。
+设置页底部还会显示 Sci-PDF 版本号和 GitHub 链接。
+
+## 批量检索逻辑
+
+当多选 Zotero 条目并执行 **获取 PDF** 时：
+
+1. 跳过非普通条目。
+2. 根据调用方式跳过已经有 PDF 的条目。
+3. 根据 item id、DOI、标题过滤重复文献。
+4. 根据设置的并发数启动固定数量的 worker。
+5. 每个 worker 领取下一篇尚未被领取的文献，检索完成后在同一位置显示结果，然后继续领取下一篇。
+
+这样既能保持界面清晰，也能避免后台重复检索同一篇文献。
 
 ## “未找到”和“错误”的区别
 
-SciPDF 会尽量区分两种情况：
+Sci-PDF 会尽量区分两种情况：
 
-- **未找到**：平台找到了记录或正常返回页面，但没有可用 PDF 链接。
-- **错误**：网络错误、HTTP 403/429/5xx、验证码/挑战页、JSON 解析失败、Zotero 导入失败等。
+- **未找到**：平台正常返回了记录或页面，但没有可用 PDF URL。
+- **错误**：网络失败、HTTP 403/429/5xx、验证码/挑战页、响应格式异常、导入失败或其它运行时异常。
 
-通知弹窗会显示成功、警告、错误状态；长错误信息会在弹窗里截断，并保留完整错误文本用于复制排查。
+长错误信息会在弹窗中截断，并在支持的情况下保留完整信息用于复制和排查。
 
 ## 安装
 
-下载最新版 XPI：
+从 GitHub Releases 下载 XPI：
 
 ```text
-https://github.com/syt2/zotero-scipdf/releases/latest/download/sci-pdf.xpi
-```
-
-本地构建后的 XPI 路径：
-
-```text
-.scaffold/build/sci-pdf.xpi
-```
-
-在当前仓库中，最新本地构建文件通常位于：
-
-```text
-E:\13302\GitHub_Project\zotero-scipdf\.scaffold\build\sci-pdf.xpi
+https://github.com/LuckerYan/zotero-scipdf/releases
 ```
 
 在 Zotero 中安装：
@@ -101,24 +108,21 @@ E:\13302\GitHub_Project\zotero-scipdf\.scaffold\build\sci-pdf.xpi
 工具 -> 附加组件 -> 从文件安装附加组件...
 ```
 
-## 使用
-
-- 对于安装插件前已经缺失附件的条目，右键条目并执行 Zotero 的查找全文 / 获取 PDF 操作。
-- 对于新增的 DOI 条目，如果 Zotero 首选项中开启了自动下载 PDF，Zotero 会自动尝试下载附件。
-- 如果条目已经有 PDF 附件，Zotero 可能会隐藏或跳过查找全文操作，这是 Zotero 自身行为。
-
-## 增加 / 删除 Sci-Hub 站点
-
-插件仍然会向 Zotero 的 `extensions.zotero.findPDFs.resolvers` 写入 Sci-Hub 自定义 resolver。首次安装或 preset 迁移时，会写入内置 Sci-Hub 镜像列表。
-
-如需自定义 Sci-Hub 镜像，可以在插件设置里编辑 Sci-Hub URL 字段。多个站点可用以下符号分隔：
+选择：
 
 ```text
-,
-，
+sci-pdf.xpi
 ```
 
-注意：Google Scholar、Unpaywall、OpenAlex、Semantic Scholar 是内置在获取流程里的平台，不通过 Sci-Hub URL 输入框配置。
+必要时重启 Zotero。
+
+## 使用
+
+- 单篇文献：右键 Zotero 条目，选择 **获取 PDF**。
+- 批量文献：多选 Zotero 条目，右键选择 **获取 PDF**。
+- 自动模式：在 Sci-PDF 设置页打开 **自动下载 PDF**。
+
+如果条目已经有 PDF 附件，Zotero 可能会隐藏或跳过部分内置 PDF 获取操作，这是 Zotero 自身行为。
 
 ## 开发
 
@@ -128,10 +132,10 @@ E:\13302\GitHub_Project\zotero-scipdf\.scaffold\build\sci-pdf.xpi
 npm install
 ```
 
-检查格式和 lint：
+启动开发热加载：
 
 ```bash
-npm run lint:check
+npm start
 ```
 
 构建并打包 XPI：
@@ -140,47 +144,23 @@ npm run lint:check
 npm run build
 ```
 
-`npm run build` 会执行：
-
-```text
-zotero-plugin build
-TypeScript no-emit 检查
-scripts/pack-xpi.mjs
-```
-
-构建产物：
+本地构建产物：
 
 ```text
 .scaffold/build/sci-pdf.xpi
 ```
 
-## 最近验证过的示例
+运行测试并打包：
 
-| DOI                            | 平台证据                              | PDF 结果                                                           |
-| ------------------------------ | ------------------------------------- | ------------------------------------------------------------------ |
-| `10.1609/aaai.v39i2.32181`     | Google Scholar / Unpaywall / OpenAlex | `https://ojs.aaai.org/index.php/AAAI/article/download/32181/34336` |
-| `10.1007/978-3-031-73404-5_27` | Google Scholar                        | `https://arxiv.org/pdf/2408.05191?`                                |
-| `10.1016/j.sbi.2015.06.004`    | Sci-Hub 镜像 / `sci-hub.world` API    | 镜像 PDF 候选                                                      |
+```bash
+npm run test
+```
 
-## 常见问题
+## 说明
 
-### 为什么显示“未找到”而不是“错误”？
+PDF 来源本身不稳定：平台可能限流、要求挑战验证、删除文件、返回网页而不是 PDF，或者确实没有开放 PDF。因此 Sci-PDF 不能保证 100% 成功，它的目标是自动尝试多个来源，减少手动查找 PDF 的重复劳动。
 
-这表示至少有一个平台找到了匹配记录或正常页面，但没有可用 PDF URL。例如 OpenAlex 可能存在 `open_access.oa_url` 网页地址，但所有 `*.pdf_url` 字段为空，这种情况会被判定为“未找到”。
+## 致谢
 
-### 为什么 Google Scholar 失败时显示错误？
-
-Google Scholar 可能返回 CAPTCHA 或 unusual traffic 页面。这属于平台运行错误 / 挑战页，不是真正的 PDF 不存在，所以会作为错误透传，而不是“未找到”。
-
-### 为什么只有标题、没有 DOI 的条目不会走 Google Scholar / Unpaywall / OpenAlex / Sci-Hub？
-
-这些平台在本插件中被设计为 DOI-only。只有标题的条目会主要由 Semantic Scholar 处理。
-
-### 可以继续添加更多 Sci-Hub 镜像吗？
-
-可以。在插件设置里编辑 Sci-Hub URL 字段，多个 URL 用 `,` 或 `，` 分隔。
-
-## 致谢与友情链接
-
-- 本项目基于原项目 [syt2/zotero-scipdf](https://github.com/syt2/zotero-scipdf) 扩展开发，感谢原作者的开源贡献。
+- 原项目：[syt2/zotero-scipdf](https://github.com/syt2/zotero-scipdf)
 - 友情链接：[Linux.do](https://linux.do/)

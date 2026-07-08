@@ -1,40 +1,51 @@
-# SciPDF For Zotero
+# Sci-PDF For Zotero
 
-[![zotero target version](https://img.shields.io/badge/Zotero-7+-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
+[![Zotero target version](https://img.shields.io/badge/Zotero-7%2B-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
 English | [简体中文](doc/README-zhCN.md)
 
 ## Introduction
 
-SciPDF is a Zotero 7/8/9 plugin for fetching and attaching PDF files to Zotero
-items. The project started as a Sci-Hub resolver plugin, and now also includes
-several DOI/title based open-access and scholarly-search resolvers.
+Sci-PDF is a Zotero 7/8/9 plugin for fetching and attaching PDF files to Zotero
+items. It can try multiple DOI/title based sources, attach a found PDF to the
+current Zotero item, and provide a right-click batch fetching workflow for items
+that do not yet have PDF attachments.
 
-The plugin integrates with Zotero's built-in
-[custom PDF resolvers](https://www.zotero.org/support/kb/custom_pdf_resolvers)
-and also provides its own right-click PDF fetching flow. It can try multiple
-platforms in sequence, classify `not found` separately from operational errors,
-and keep dynamic platform weights so successful platforms are tried earlier next
-time.
+This fork is maintained at:
 
-> Related references:
->
-> - [Zotero custom PDF resolvers](https://www.zotero.org/support/kb/custom_pdf_resolvers)
-> - [Zotero attachment resolver code](https://github.com/zotero/zotero/blob/5536f8d2bd08ddac9074b9df05b7d205273835e7/chrome/content/zotero/xpcom/attachments.js#L1350)
-> - [Zotero Chinese user guide](https://zotero-chinese.com/user-guide/plugins/Zotero-scihub.html#操作步骤)
+```text
+https://github.com/LuckerYan/zotero-scipdf
+```
 
-## Supported Platforms
+The project was originally based on
+[syt2/zotero-scipdf](https://github.com/syt2/zotero-scipdf). Thanks to the
+original author for the open-source work.
 
-| Platform         | Lookup key                             | PDF decision rule                                                                             | Notes                                                                                          |
-| ---------------- | -------------------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Semantic Scholar | Title first, DOI as auxiliary evidence | Graph/open-access PDF fields, website PDF visibility fields, search PDF links, ArXiv ID       | Used when the Zotero item has a title.                                                         |
-| Google Scholar   | DOI only                               | Extracts visible `[PDF]` links or clearly PDF-like URLs from Scholar results                  | Detects CAPTCHA / unusual-traffic pages as operational errors, not as `not found`.             |
-| Unpaywall        | DOI only                               | `best_oa_location.url_for_pdf`, `first_oa_location.url_for_pdf`, `oa_locations[].url_for_pdf` | Landing pages such as `url` or `url_for_landing_page` are not treated as PDFs.                 |
-| OpenAlex         | DOI only                               | `primary_location.pdf_url`, `best_oa_location.pdf_url`, `locations[].pdf_url`                 | Uses the DOI direct endpoint `/works/doi:{doi}`. `open_access.oa_url` is not treated as a PDF. |
-| Sci-Hub mirrors  | DOI only                               | HTML PDF embeds/iframes/links, mirror-specific APIs/tasks                                     | Includes ALTCHA PoW solving and DDoS-Guard pure HTTP/WebSocket solving where implemented.      |
+## Main Features
 
-Current built-in Sci-Hub-style platforms:
+- Automatic PDF download switch in the plugin preferences.
+- Right-click **Get PDF** action for one or more selected Zotero items.
+- Batch PDF fetching with configurable item-level concurrency.
+- Independent worker progress cards in the bottom-right corner.
+- Worker-specific final result cards: success, not found, or error.
+- Duplicate suppression by Zotero item id, DOI, and title to avoid fetching the
+  same paper in multiple workers.
+- Multiple resolver sources, including open-access metadata services, scholarly
+  search pages, and built-in Sci-Hub-style mirrors.
+- GitHub Actions release workflow for online XPI packaging.
+
+## Supported Sources
+
+| Source             | Lookup key          | Notes                                                                                             |
+| ------------------ | ------------------- | ------------------------------------------------------------------------------------------------- |
+| Semantic Scholar   | Title / DOI context | Uses graph/open-access fields, website PDF visibility fields, search links, and ArXiv evidence.   |
+| Google Scholar     | DOI                 | Extracts visible `[PDF]` links or PDF-like URLs; CAPTCHA pages are treated as operational errors. |
+| Unpaywall          | DOI                 | Uses explicit `url_for_pdf` fields only; landing pages are not treated as PDFs.                   |
+| OpenAlex           | DOI                 | Uses explicit `*.pdf_url` fields from DOI lookup results.                                         |
+| Sci-Hub-style URLs | DOI                 | Uses built-in mirror list and mirror-specific parsing/API logic where implemented.                |
+
+Current built-in Sci-Hub-style mirrors:
 
 ```text
 https://sci-hub.kvnp.top/
@@ -48,98 +59,80 @@ https://sci-hub.ren/
 https://sci-hub.world/
 ```
 
-Special cases:
+Special handling currently includes:
 
-- `sci-hub.world` is handled through its API endpoint at `fast.wbleb.com`
-  instead of parsing the Next.js page directly.
-- `sci-hub.ee` is intentionally removed from the default platforms because it
-  redirects/submits to `www.tesble.com`; old preset entries are cleaned during
-  migration.
-- `sci-hub.ru` / `sci-hub.st` can pass the observed DDoS-Guard challenge using
-  the built-in pure HTTP/WebSocket solver.
-- `sci-hub.su` and similar ALTCHA pages can be solved by the built-in ALTCHA
-  proof-of-work solver.
+- `sci-hub.world` API/task flow.
+- DDoS-Guard handling for observed compatible mirrors.
+- ALTCHA proof-of-work handling for compatible pages.
+- Cleanup of stale preset resolver entries during migration.
 
-## Lookup Order and Dynamic Weights
+## Preferences
 
-The plugin builds a candidate platform list per Zotero item:
+Open Zotero preferences and find the Sci-PDF panel.
 
-- Items with a title can use Semantic Scholar.
-- Items with DOI can use Google Scholar, Unpaywall, OpenAlex, and Sci-Hub
-  mirrors.
-- Items without DOI cannot use DOI-only platforms.
+Available options:
 
-The final order is sorted by `PlatformWeightManager`:
+- **Automatic PDF Download**: enables or disables automatic resolver entries in
+  Zotero.
+- **Fetch concurrency**: controls how many Zotero items are fetched in parallel.
+  The value is clamped to `1`-`5`, with default `3`.
 
-- successful platforms gain weight;
-- failed/not-found/error platforms lose weight according to outcome;
-- even low-weight platforms remain eligible, so a platform with a bad recent
-  history can still be tried for a different paper.
+The preferences page also shows the Sci-PDF version and a GitHub link.
+
+## Batch Fetching Behavior
+
+When multiple Zotero items are selected and **Get PDF** is triggered:
+
+1. Non-regular items are skipped.
+2. Items that already have a PDF can be skipped depending on the caller.
+3. Duplicate items/papers are filtered by item id, DOI, and title.
+4. A fixed number of workers is started according to the configured concurrency.
+5. Each worker claims the next unclaimed item, fetches it, shows its result in
+   the same worker slot, then continues with another unclaimed item.
+
+This keeps the UI readable while also avoiding duplicate background work.
 
 ## Not Found vs Error
 
-SciPDF separates true PDF absence from operational failures:
+Sci-PDF tries to distinguish real PDF absence from platform failures:
 
-- **Not found**: the platform returned a matching record/page but no usable PDF
-  candidate was present.
+- **Not found**: a source returned a matching record/page but no usable PDF URL.
 - **Error**: network failures, HTTP 403/429/5xx, CAPTCHA/challenge pages,
-  malformed JSON, failed imports, or other unexpected problems.
+  malformed responses, failed imports, or unexpected runtime failures.
 
-The notification UI shows success/warning/error states, truncates long error
-messages in the popup, and keeps the full error text copyable for debugging.
+Long error messages are truncated in the popup, with full details available for
+copy/debugging where supported.
 
 ## Installation
 
-Download and install the latest release XPI:
+Download the XPI from GitHub Releases:
 
 ```text
-https://github.com/syt2/zotero-scipdf/releases/latest/download/sci-pdf.xpi
+https://github.com/LuckerYan/zotero-scipdf/releases
 ```
 
-For local builds, use:
-
-```text
-.scaffold/build/sci-pdf.xpi
-```
-
-On this repository checkout, the latest local build is expected at:
-
-```text
-E:\13302\GitHub_Project\zotero-scipdf\.scaffold\build\sci-pdf.xpi
-```
-
-Install it in Zotero via:
+Install it in Zotero:
 
 ```text
 Tools -> Add-ons -> Install Add-on From File...
 ```
 
-## Usage
-
-- For items that already existed before installing the plugin, right-click the
-  item and run Zotero's full-text/PDF fetch action.
-- For newly added DOI items, Zotero can try to download PDFs automatically when
-  automatic PDF download is enabled.
-- If an item already has a PDF attachment, Zotero may hide or skip the full-text
-  fetch action depending on Zotero's own behavior.
-
-## Add or Remove Sci-Hub Sites
-
-The plugin still writes custom Sci-Hub resolvers into Zotero's
-`extensions.zotero.findPDFs.resolvers` preference. On first install or preset
-migration, it seeds the built-in Sci-Hub mirror list.
-
-To customize Sci-Hub mirrors, open the plugin settings and edit the Sci-Hub URL
-field. Multiple sites can be separated by comma characters:
+Select:
 
 ```text
-,
-，
+sci-pdf.xpi
 ```
 
-Non-Sci-Hub platforms such as Google Scholar, Unpaywall, OpenAlex, and Semantic
-Scholar are built into the fetch flow and are not configured through the Sci-Hub
-URL field.
+Then restart Zotero if needed.
+
+## Usage
+
+- Single item: right-click a Zotero item and choose **Get PDF**.
+- Batch mode: select multiple Zotero items and choose **Get PDF**.
+- Automatic mode: enable **Automatic PDF Download** in the Sci-PDF preferences.
+
+If an item already has a PDF attachment, Zotero may hide or skip some built-in
+PDF-fetch actions. This is Zotero's own behavior.
 
 ## Development
 
@@ -149,10 +142,10 @@ Install dependencies:
 npm install
 ```
 
-Check formatting and lint rules:
+Start development hot reload:
 
 ```bash
-npm run lint:check
+npm start
 ```
 
 Build and pack the XPI:
@@ -161,55 +154,26 @@ Build and pack the XPI:
 npm run build
 ```
 
-The build command runs:
-
-```text
-zotero-plugin build
-TypeScript no-emit check
-scripts/pack-xpi.mjs
-```
-
-Expected output:
+Expected local build output:
 
 ```text
 .scaffold/build/sci-pdf.xpi
 ```
 
-## Recently Verified Examples
+Run tests and pack XPI:
 
-The following DOI examples were recently verified against the implemented
-resolver logic:
+```bash
+npm run test
+```
 
-| DOI                            | Platform evidence                     | PDF result                                                         |
-| ------------------------------ | ------------------------------------- | ------------------------------------------------------------------ |
-| `10.1609/aaai.v39i2.32181`     | Google Scholar / Unpaywall / OpenAlex | `https://ojs.aaai.org/index.php/AAAI/article/download/32181/34336` |
-| `10.1007/978-3-031-73404-5_27` | Google Scholar                        | `https://arxiv.org/pdf/2408.05191?`                                |
-| `10.1016/j.sbi.2015.06.004`    | Sci-Hub mirrors / `sci-hub.world` API | mirror PDF candidate                                               |
+## Notes
 
-## FAQ
+PDF discovery is inherently unstable: sources can rate-limit requests, require
+challenges, remove files, return landing pages instead of PDFs, or simply not
+have an open PDF available. Sci-PDF cannot guarantee 100% success; it is meant to
+reduce repetitive manual PDF searching by trying multiple sources automatically.
 
-### Why is a paper shown as "Not found" instead of an error?
+## Acknowledgements
 
-This means at least one platform found a matching record/page but returned no
-usable PDF URL. For example, OpenAlex may have `open_access.oa_url` pointing to a
-web page while all `*.pdf_url` fields are empty; this is treated as `not found`.
-
-### Why is a Google Scholar failure shown as an error?
-
-Google Scholar can return CAPTCHA or unusual-traffic pages. These are operational
-failures and are reported as errors/challenges, not as true PDF absence.
-
-### Why does a DOI-only platform not run for title-only items?
-
-Google Scholar, Unpaywall, OpenAlex, and Sci-Hub mirror fetchers are intentionally
-DOI-only in this plugin. Title-only fallback is handled by Semantic Scholar.
-
-### Can I add more Sci-Hub mirrors?
-
-Yes. Use the plugin settings and separate URLs with `,` or `，`.
-
-## Acknowledgements and Friendly Links
-
-- This project builds on [syt2/zotero-scipdf](https://github.com/syt2/zotero-scipdf).
-  Thanks to the original author for the open-source work.
+- Original project: [syt2/zotero-scipdf](https://github.com/syt2/zotero-scipdf)
 - Friendly link: [Linux.do](https://linux.do/)
