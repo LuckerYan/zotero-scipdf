@@ -10,6 +10,10 @@ interface ProgressPopupOptions {
   slotIndex?: number;
 }
 
+interface NotificationPopupOptions {
+  slotIndex?: number;
+}
+
 interface ProgressUpdateOptions {
   type?: PopWinType;
 }
@@ -80,6 +84,7 @@ export class Utils {
     type?: PopWinType,
     closeTime: number = 3000,
     fullMessage?: string,
+    options: NotificationPopupOptions = {},
   ) {
     const popupType = type ?? "default";
     const displayMessage = fullMessage
@@ -91,6 +96,7 @@ export class Utils {
       popupType,
       closeTime,
       fullMessage,
+      options,
     );
     if (card) {
       return card;
@@ -216,6 +222,9 @@ export class Utils {
           .querySelector(
             `[data-scipdf-fetch-progress-slot="${fixedSlotIndex}"]`,
           )
+          ?.remove();
+        doc
+          .querySelector(`[data-scipdf-result-slot="${fixedSlotIndex}"]`)
           ?.remove();
       }
 
@@ -401,6 +410,7 @@ export class Utils {
     type: PopWinType,
     closeTime: number,
     fullMessage?: string,
+    options: NotificationPopupOptions = {},
   ) {
     const themes: Record<
       PopWinType,
@@ -469,7 +479,25 @@ export class Utils {
         return undefined;
       }
 
-      doc.getElementById("scipdf-result-card")?.remove();
+      const fixedSlotIndex =
+        typeof options.slotIndex === "number" &&
+        Number.isInteger(options.slotIndex)
+          ? Math.max(0, options.slotIndex)
+          : undefined;
+
+      if (fixedSlotIndex !== undefined) {
+        doc
+          .querySelector(`[data-scipdf-result-slot="${fixedSlotIndex}"]`)
+          ?.remove();
+        doc
+          .querySelector(
+            `[data-scipdf-fetch-progress-slot="${fixedSlotIndex}"]`,
+          )
+          ?.remove();
+      } else {
+        doc.getElementById("scipdf-result-card")?.remove();
+      }
+
       const htmlNS = "http://www.w3.org/1999/xhtml";
       const create = <K extends keyof HTMLElementTagNameMap>(tagName: K) =>
         doc.createElementNS(htmlNS, tagName) as HTMLElementTagNameMap[K];
@@ -477,11 +505,17 @@ export class Utils {
       let closeTimer: ReturnType<typeof setTimeout> | undefined;
 
       const root = create("div");
-      root.id = "scipdf-result-card";
+      root.id =
+        fixedSlotIndex === undefined
+          ? "scipdf-result-card"
+          : `scipdf-result-card-${fixedSlotIndex}-${Date.now()}`;
+      if (fixedSlotIndex !== undefined) {
+        root.setAttribute("data-scipdf-result-slot", String(fixedSlotIndex));
+      }
       Object.assign(root.style, {
         position: "fixed",
         right: "16px",
-        bottom: "18px",
+        bottom: `${18 + (fixedSlotIndex ?? 0) * this.progressCardStackStep}px`,
         zIndex: "2147483647",
         width: "336px",
         boxSizing: "border-box",

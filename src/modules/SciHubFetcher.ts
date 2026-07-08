@@ -228,6 +228,8 @@ export class SciHubFetcher {
 
   private static readonly activeFetchKeys = new Set<string>();
 
+  private static readonly workerResultDisplayMs = 1500;
+
   private static readonly sha256InitialHash = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
     0x1f83d9ab, 0x5be0cd19,
@@ -322,12 +324,15 @@ export class SciHubFetcher {
             getString("popwin-unknownerror"),
             message,
             "fail",
-            1500,
+            this.workerResultDisplayMs,
             message,
+            { slotIndex: workerIndex },
           );
+          return true;
         } finally {
           this.releaseActiveFetch(keys);
         }
+        return true;
       },
     );
   }
@@ -340,6 +345,9 @@ export class SciHubFetcher {
         getString("popwin-doimissing"),
         item.getDisplayTitle(),
         "warning",
+        this.workerResultDisplayMs,
+        undefined,
+        { slotIndex: workerIndex },
       );
       ztoolkit.log(`DOI/Title Not Found for "${item.getField("title")}"`);
       return;
@@ -532,7 +540,9 @@ export class SciHubFetcher {
         getString("popwin-fetchsuccess"),
         itemDisplayTitle,
         "success",
-        1500,
+        this.workerResultDisplayMs,
+        undefined,
+        { slotIndex: workerIndex },
       );
     } else if (
       notFoundErrors.length > 0 &&
@@ -554,7 +564,9 @@ export class SciHubFetcher {
         getString("popwin-pdfnotavaliable"),
         itemDisplayTitle,
         "warning",
-        1500,
+        this.workerResultDisplayMs,
+        undefined,
+        { slotIndex: workerIndex },
       );
     } else {
       const failures = [...errors, ...notFoundErrors];
@@ -568,8 +580,9 @@ export class SciHubFetcher {
         getString("popwin-unknownerror"),
         message,
         "fail",
-        1500,
+        this.workerResultDisplayMs,
         message,
+        { slotIndex: workerIndex },
       );
     }
   }
@@ -631,7 +644,11 @@ export class SciHubFetcher {
   private static async runWithConcurrency<T>(
     items: T[],
     concurrency: number,
-    worker: (item: T, index: number, workerIndex: number) => Promise<void>,
+    worker: (
+      item: T,
+      index: number,
+      workerIndex: number,
+    ) => Promise<boolean | void>,
   ) {
     const workerCount = Math.min(Math.max(1, concurrency), items.length);
     let nextIndex = 0;
@@ -655,7 +672,14 @@ export class SciHubFetcher {
         if (itemIndex === undefined) {
           return;
         }
-        await worker(items[itemIndex], itemIndex, workerIndex);
+        const shouldHoldResult = await worker(
+          items[itemIndex],
+          itemIndex,
+          workerIndex,
+        );
+        if (shouldHoldResult) {
+          await this.sleep(this.workerResultDisplayMs);
+        }
       }
     };
     await Promise.all(
